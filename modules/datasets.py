@@ -33,5 +33,5 @@ class CommitPackDataset(torch.utils.data.Dataset):
             'labels': self.labels[idx],
         }
     
-    def __len(self):
+    def __len__(self):
         return len(self.input_ids)
