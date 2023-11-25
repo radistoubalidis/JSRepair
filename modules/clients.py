@@ -1,7 +1,10 @@
 import requests
+import os
 
-HF_KEY_PATH = '/content/drive/MyDrive/Thesis/keys/.hugging-face-token.txt'
-
+if os.path.exists('/content/drive/MyDrive/Thesis/keys/.hugging-face-token.txt'):
+    HF_KEY_PATH = '/content/drive/MyDrive/Thesis/keys/.hugging-face-token.txt'
+else:
+    HF_KEY_PATH = '.huggingface'
 
 class HuggingFaceClient():
     def __init__(self) -> None:
@@ -11,7 +14,7 @@ class HuggingFaceClient():
         self.BASE_URL = "https://datasets-server.huggingface.co"
         self.AUTH = {"Authorization":f"Bearer {self.TOKEN}"}
 
-    def get(self, method, params=None):
+    def get(self, method: str, params=None):
         if params != None:
             return requests.get(
                 url=f"{self.BASE_URL}/{method}",

@@ -1,6 +1,7 @@
 import pytorch_lightning as pl
 import torch
 
+MAX_EPOCHS = 10
 
 def init_checkpoint(cpkt_path, model_dir, version):
     return pl.callbacks.ModelCheckpoint(
@@ -21,6 +22,7 @@ def init_logger(log_path, model_dir, version):
 def Trainer(checkpoint: pl.callbacks.ModelCheckpoint, logger: pl.loggers.CSVLogger, debug=False):
     return pl.Trainer(
         callbacks=checkpoint,
+        max_epochs=MAX_EPOCHS,
         logger=logger,
         devices=1,
         accelerator='cuda' if torch.cuda.is_available() else 'cpu',
