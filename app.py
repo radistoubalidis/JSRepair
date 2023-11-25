@@ -1,6 +1,7 @@
 import argparse
 from http.client import HTTPException
 import json
+import os
 from re import DEBUG
 from modules.clients import HuggingFaceClient
 from modules.datasets import CommitPackDataset
@@ -16,6 +17,16 @@ from modules.models import CodeBertJS
 
 tokenizer = RobertaTokenizer.from_pretrained('microsoft/codebert-base-mlm')
 MAX_SAMPLE = 100000
+
+if os.path.exists('/content/drive/MyDrive/Thesis/checkpoints'):
+    CPKT_PATH = '/content/drive/MyDrive/Thesis/checkpoints'
+else:
+    CPKT_PATH = 'checkpoint_test'
+
+if os.path.exists('/content/drive/MyDrive/Thesis/logs'):
+    LOG_PATH = '/content/drive/MyDrive/Thesis/logs'
+else:
+    LOG_PATH = 'log_test'
 
 def download_split(client: HuggingFaceClient,offset: int):
     method = 'rows'
@@ -55,17 +66,18 @@ def parseArgs():
     parser = argparse.ArgumentParser()
     parser.add_argument('--offset')
     parser.add_argument('--debug')
+    parser.add_argument('--version')
     return parser.parse_args()
 
-def train(X_train, X_val, Y_train, Y_val, debug_mode: bool):
+def train(X_train, X_val, Y_train, Y_val, debug_mode: bool, version: int):
     train_dataset = CommitPackDataset(X_train, Y_train)
     val_dataset = CommitPackDataset(X_val, Y_val)
     train_dataloder = DataLoader(train_dataset, batch_size=8, shuffle=True)
     val_dataloader = DataLoader(val_dataset, batch_size=1)
     print("Dataset Ready.")
     model = CodeBertJS()
-    logger = init_logger('log_test','CodeBertJS2', 1)
-    checkpoint = init_checkpoint('checkpoint_test', 'CodeBertJS2', 1)
+    logger = init_logger(LOG_PATH,'CodeBertJS2', version)
+    checkpoint = init_checkpoint(CPKT_PATH, 'CodeBertJS2', version)
     trainer = Trainer(checkpoint,logger,debug=debug_mode)
     trainer.fit(
         model,
@@ -78,6 +90,7 @@ def main():
     args = parseArgs()
     INITIAL_OFFSET = args.offset
     DEBUG = True if args.debug == 1 else False
+    VERSION = args.version
     offset = int(INITIAL_OFFSET)
     while(True):
         print(f"{offset // 100}-th hundred.")
@@ -92,7 +105,7 @@ def main():
         train(X_train, X_val, Y_train, Y_val, DEBUG)
         offset += 100
         if offset >= MAX_SAMPLE:
-            break
+            break   
 
 if __name__ == '__main__':
     main()
