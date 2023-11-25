@@ -16,6 +16,8 @@ from modules.models import CodeBertJS
 
 
 tokenizer = RobertaTokenizer.from_pretrained('microsoft/codebert-base-mlm')
+model = CodeBertJS()
+
 MAX_SAMPLE = 100000
 
 if os.path.exists('/content/drive/MyDrive/Thesis/checkpoints'):
@@ -75,7 +77,6 @@ def train(X_train, X_val, Y_train, Y_val, debug_mode: bool, version: int):
     train_dataloder = DataLoader(train_dataset, batch_size=8, shuffle=True)
     val_dataloader = DataLoader(val_dataset, batch_size=1)
     print("Dataset Ready.")
-    model = CodeBertJS()
     logger = init_logger(LOG_PATH,'CodeBertJS2', version)
     checkpoint = init_checkpoint(CPKT_PATH, 'CodeBertJS2', version)
     trainer = Trainer(checkpoint,logger,debug=debug_mode)
