@@ -1,6 +1,7 @@
 import argparse
 from http.client import HTTPException
 import json
+from re import DEBUG
 from modules.clients import HuggingFaceClient
 from modules.datasets import CommitPackDataset
 from modules.TrainConfig import Trainer, init_checkpoint, init_logger
@@ -53,9 +54,10 @@ def tokenize(inputs):
 def parseArgs():
     parser = argparse.ArgumentParser()
     parser.add_argument('--offset')
+    parser.add_argument('--debug')
     return parser.parse_args()
 
-def train(X_train, X_val, Y_train, Y_val):
+def train(X_train, X_val, Y_train, Y_val, debug_mode: bool):
     train_dataset = CommitPackDataset(X_train, Y_train)
     val_dataset = CommitPackDataset(X_val, Y_val)
     train_dataloder = DataLoader(train_dataset, batch_size=8, shuffle=True)
@@ -64,7 +66,7 @@ def train(X_train, X_val, Y_train, Y_val):
     model = CodeBertJS()
     logger = init_logger('log_test','CodeBertJS2', 1)
     checkpoint = init_checkpoint('checkpoint_test', 'CodeBertJS2', 1)
-    trainer = Trainer(checkpoint,logger,debug=True)
+    trainer = Trainer(checkpoint,logger,debug=debug_mode)
     trainer.fit(
         model,
         train_dataloaders=train_dataloder,
@@ -75,6 +77,7 @@ def train(X_train, X_val, Y_train, Y_val):
 def main():
     args = parseArgs()
     INITIAL_OFFSET = args.offset
+    DEBUG = args.debug
     offset = int(INITIAL_OFFSET)
     while(True):
         print(f"{offset}-th hundred.")
@@ -86,7 +89,7 @@ def main():
         X_val = tokenize(X_val)
         Y_train = tokenize(Y_train)
         Y_val = tokenize(Y_val)
-        train(X_train, X_val, Y_train, Y_val)
+        train(X_train, X_val, Y_train, Y_val, DEBUG)
         offset += 100
         if offset >= MAX_SAMPLE:
             break
