@@ -77,10 +77,10 @@ def train(X_train, X_val, Y_train, Y_val, debug_mode: bool):
 def main():
     args = parseArgs()
     INITIAL_OFFSET = args.offset
-    DEBUG = args.debug
+    DEBUG = True if args.debug == 1 else False
     offset = int(INITIAL_OFFSET)
     while(True):
-        print(f"{offset}-th hundred.")
+        print(f"{offset // 100}-th hundred.")
         if offset == INITIAL_OFFSET:
             X_train, X_val, Y_train, Y_val = download_split(HuggingFaceClient(), INITIAL_OFFSET)
         else:
