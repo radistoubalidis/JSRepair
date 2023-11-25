@@ -103,7 +103,7 @@ def main():
         X_val = tokenize(X_val)
         Y_train = tokenize(Y_train)
         Y_val = tokenize(Y_val)
-        train(X_train, X_val, Y_train, Y_val, DEBUG)
+        train(X_train, X_val, Y_train, Y_val, DEBUG, VERSION)
         offset += 100
         if offset >= MAX_SAMPLE:
             break   
