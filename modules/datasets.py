@@ -24,7 +24,7 @@ class CommitPackDataset(torch.utils.data.Dataset):
     def __init__(self, encodings, labels):
         self.input_ids = encodings.input_ids
         self.attention_mask = encodings.attention_mask
-        self.labels = labels
+        self.labels = labels.input_ids
         
     def __getitem__(self, idx):
         return {
