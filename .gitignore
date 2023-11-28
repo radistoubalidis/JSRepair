@@ -2,3 +2,5 @@ dataset-demo.json
 modules/__pycache__
 .huggingface
 load.py
+checkpoint_test
+log_test

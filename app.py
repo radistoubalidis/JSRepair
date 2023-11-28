@@ -3,6 +3,7 @@ from http.client import HTTPException
 import json
 import os
 from re import DEBUG
+import sys
 from modules.clients import HuggingFaceClient
 from modules.datasets import CommitPackDataset
 from modules.TrainConfig import Trainer, init_checkpoint, init_logger
@@ -13,6 +14,7 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 from modules.models import CodeBertJS
+from modules.miner import get_fix_commits
 
 
 tokenizer = RobertaTokenizer.from_pretrained('microsoft/codebert-base-mlm')
@@ -47,10 +49,12 @@ def download_split(client: HuggingFaceClient,offset: int):
         raise HTTPException({response.json()})
     
     response_json = response.json()
-    rows = [x['row'] for x in response_json['rows']]
-    dataset_list = [{'buggy_code': x['old_contents'], 'fixed_code':x['new_contents']} for x in rows]
-    df = pd.DataFrame(dataset_list)
-    train_inputs , train_labels = df['buggy_code'].tolist(), df['fixed_code'].tolist()
+    dataset_df = get_fix_commits(response_json)
+    print(f"""
+            Dataset Samples
+            {dataset_df.head()}
+        """)
+    train_inputs , train_labels = dataset_df['old_contents'].tolist(), dataset_df['new_contents'].tolist()
     return train_test_split(train_inputs, train_labels, test_size=0.1, random_state=42)
     
 
