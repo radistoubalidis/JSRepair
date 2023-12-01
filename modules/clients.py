@@ -4,7 +4,7 @@ import os
 if os.path.exists('/content/drive/MyDrive/Thesis/keys/.hugging-face-token.txt'):
     HF_KEY_PATH = '/content/drive/MyDrive/Thesis/keys/.hugging-face-token.txt'
 elif os.path.exists('/content/drive/MyDrive/Thesis/keys/.hugging-face'):
-    HF_KEY_PATH = '/content/drive/MyDrive/Thesis/keys/.hugging-face'
+    HF_KEY_PATH = '/content/drive/MyDrive/Thesis/keys/.huggingface'
     
 else:
     HF_KEY_PATH = '.huggingface'
