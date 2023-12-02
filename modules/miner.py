@@ -1,8 +1,10 @@
 import pandas as pd
 
-def get_fix_commits(dataset_res: dict) -> pd.DataFrame:
+def get_fix_commits(dataset_res: dict, dataset_res2: dict = None) -> pd.DataFrame:
     dataset_list = []
     for item in dataset_res['rows']:
+        dataset_list.append(item['row'])
+    for item in dataset_res2['rows']:
         dataset_list.append(item['row'])
     df = pd.DataFrame(dataset_list)
     patterns_EN = ['fix','bug','patch','repair','refactor','address','error','conflict','revert']
