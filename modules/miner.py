@@ -4,7 +4,7 @@ import pandas as pd
 import sqlite3
 
 
-def get_dataset_filtered_commits() -> pd.DataFrame:
+def get_dataset_filtered_commits(db_name: str) -> pd.DataFrame:
     patterns_EN = ['fix','bug','patch','repair','refactor','address','error','conflict','revert']
     patterns_CN = ['修正','错误','补丁','修理','重构','地址','错误','冲突','还原']
     patterns_RU = ['исправить', 'ошибка', 'исправление', 'исправить', 'рефакторинг', 'адрес', 'ошибка', 'конфликт', 'отменить']
@@ -80,10 +80,7 @@ def get_dataset_filtered_commits() -> pd.DataFrame:
     OR message like '%Konflikt%'
     """
 
-    if os.path.exists('/content/drive/MyDrive/Thesis/commipack_datasets.sql'):
-        con = sqlite3.connect('/content/drive/MyDrive/Thesis/commipack_datasets.sql')
-    else:
-        con = sqlite3.connect('commipack_datasets.sql')
+    con = sqlite3.connect(db_name)
     dataset_df = pd.read_sql_query(query, con)
     return dataset_df
 
