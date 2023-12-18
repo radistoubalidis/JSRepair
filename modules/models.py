@@ -1,3 +1,4 @@
+import sys
 from transformers import (
     AutoModelForMaskedLM,
     T5ForConditionalGeneration,
@@ -11,9 +12,8 @@ class CodeBertJS(pl.LightningModule):
 
     def __init__(self) -> None:
         super().__init__()
-        self.save_hyperparameters()
         model_path = 'microsoft/codebert-base-mlm'
-        self.save_hyperparameters()
+        # self.save_hyperparameters()
         self.encoder = AutoModelForMaskedLM.from_pretrained(model_path, return_dict=True)
         self.encoder = self.encoder.to(self.device)
 

@@ -2,6 +2,7 @@ import json
 import os
 import pandas as pd
 import sqlite3
+import subprocess
 
 
 def get_dataset_filtered_commits(db_name: str) -> pd.DataFrame:
@@ -90,7 +91,13 @@ def writeJS(path: str, contents: str):
     with open(path,'w') as f:
         f.write(contents)
         
-def filter_eslint(output: dict):
-    output_new = output[0]['messages']
-    output_old = output[1]['messages']
-    return 1 if len(output_old) < len(output_new) else 0
+def writeJSAll(df: pd.DataFrame, chunk: float = 1):
+    for idx, row in df[:int(len(df)*chunk)].iterrows():
+        writeJS(f"samples/old/_{idx}.js", row['old_contents'])
+        writeJS(f"samples/new/_{idx}.js", row['new_contents'])
+
+def eslint(blob: str) -> dict:
+    cmd = ["npx", "eslint", "--format=json", blob]
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    output = json.loads(process.communicate()[0].decode("utf-8"))
+    return output
