@@ -35,3 +35,20 @@ class CommitPackDataset(torch.utils.data.Dataset):
     
     def __len__(self):
         return len(self.input_ids)
+    
+class CodeT5Dataset(torch.utils.data.Dataset):
+    def __init__(self, encodings):
+        if encodings['input_ids'].size() == torch.tensor([1,5,512]):
+            encodings['input_ids'] = encodings['input_ids'].squeeze(0)
+        self.input_ids = encodings['input_ids']
+        self.attention_mask = encodings['attention_mask']
+
+    def __getitem__(self, idx):
+        item = {
+            'input_ids': self.input_ids[idx],
+            'attention_mask': self.attention_mask[idx],
+        }
+        return item
+
+    def __len__(self):
+        return len(self.input_ids)
