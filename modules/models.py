@@ -1,8 +1,11 @@
 import sys
 from transformers import (
     AutoModelForMaskedLM,
+    RobertaForMaskedLM,
     T5ForConditionalGeneration,
-    AdamW
+    AdamW,
+    RobertaTokenizer,
+    DataCollatorForLanguageModeling,
     )
 import pytorch_lightning as pl
 import torch.optim as optim
@@ -14,7 +17,7 @@ class CodeBertJS(pl.LightningModule):
         super().__init__()
         model_path = 'microsoft/codebert-base-mlm'
         # self.save_hyperparameters()
-        self.encoder = AutoModelForMaskedLM.from_pretrained(model_path, return_dict=True)
+        self.encoder = RobertaForMaskedLM.from_pretrained(model_path, return_dict=True)
         self.encoder = self.encoder.to(self.device)
 
     def forward(self, input_ids, attention_mask, labels=None):
@@ -62,46 +65,39 @@ class CodeBertJS(pl.LightningModule):
         optimizer = optim.Adam(self.parameters(), lr=0.0001)
         return optimizer
     
-class CodeT5(pl.LightningModule):
-    
-    def __init__(self) -> None:
+class CodeT5(pl.LightningModule): 
+    def __init__(self, tokenizer: RobertaTokenizer) -> None:
         super().__init__()
-        model_path = 'Salesforce/codet5-base'
-        self.model = T5ForConditionalGeneration.from_pretrained(model_path, return_dict=True)
+        self.tokenizer = tokenizer
+        self.data_collator = DataCollatorForLanguageModeling(
+            tokenizer=self.tokenizer, mlm=True, mlm_probability=0.15
+        )
+        self.model = T5ForConditionalGeneration.from_pretrained('Salesforce/codet5-base', return_dict=True)
         
-    def forward(self, input_ids, attention_mask, labels=None):
+    def forward(self, batch):
+        input_ids, attention_mask = self.data_collator(batch)
         output = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            labels=labels
         )
         return output.loss , output.logits
     
     def training_step(self, batch, batch_idx):
-        input_ids = batch['input_ids']
-        attention_mask = batch['attention_mask']
-        labels = batch['labels']
-        loss, outputs = self.forward(input_ids, attention_mask, labels)
+        loss, outputs = self.forward(batch)
         self.log("train_loss", loss, prog_bar=True, logger=True)
         return loss
     
     def validation_step(self, batch, batch_idx):
-        input_ids = batch['input_ids']
-        attention_mask = batch['attention_mask']
-        labels = batch['labels']
-        loss, outputs = self.forward(input_ids, attention_mask, labels)
+        loss, outputs = self.forward(batch)
         self.log("val_loss", loss, prog_bar=True, logger=True)
         return loss
     
     def test_step(self, batch, batch_idx):
-        input_ids = batch['input_ids']
-        attention_mask = batch['attention_mask']
-        labels = batch['labels']
-        loss, outputs = self.forward(input_ids, attention_mask, labels)
+        loss, outputs = self.forward(batch)
         self.log("test_loss", loss, prog_bar=True, logger=True)
         return loss
     
-    def configure_optimizers(self):
+    def configure_optimizers(self) -> AdamW:
         return AdamW(self.parameters(), lr=0.0001)
 
 
