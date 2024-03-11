@@ -24,7 +24,7 @@ def Trainer(checkpoint: pl.callbacks.ModelCheckpoint, logger: pl.loggers.CSVLogg
         callbacks=checkpoint,
         max_epochs=MAX_EPOCHS,
         logger=logger,
-        devices=1,
-        accelerator='cuda' if torch.cuda.is_available() else 'cpu',
+        accelerator='cpu',
+        # devices=1,
         fast_dev_run=debug,
     )

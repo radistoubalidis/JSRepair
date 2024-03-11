@@ -1,4 +1,5 @@
 import sys
+from torch import tensor
 from transformers import (
     AutoModelForMaskedLM,
     RobertaForMaskedLM,
@@ -9,7 +10,7 @@ from transformers import (
     )
 import pytorch_lightning as pl
 import torch.optim as optim
-
+import torch.nn as nn
 
 class CodeBertJS(pl.LightningModule):
 
@@ -66,21 +67,19 @@ class CodeBertJS(pl.LightningModule):
         return optimizer
     
 class CodeT5(pl.LightningModule): 
-    def __init__(self, tokenizer: RobertaTokenizer) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.tokenizer = tokenizer
-        self.data_collator = DataCollatorForLanguageModeling(
-            tokenizer=self.tokenizer, mlm=True, mlm_probability=0.15
-        )
         self.model = T5ForConditionalGeneration.from_pretrained('Salesforce/codet5-base', return_dict=True)
         
     def forward(self, batch):
-        input_ids, attention_mask = self.data_collator(batch)
         output = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
+            input_ids=batch['input_ids'],
+            attention_mask=batch['attention_mask'],
+            decoder_input_ids=batch['decoder_input_ids'],
+            decoder_attention_mask=batch['decoder_attention_mask']
         )
-        return output.loss , output.logits
+        sys.exit(dir(output.logits))
+        return output
     
     def training_step(self, batch, batch_idx):
         loss, outputs = self.forward(batch)
@@ -99,5 +98,3 @@ class CodeT5(pl.LightningModule):
     
     def configure_optimizers(self) -> AdamW:
         return AdamW(self.parameters(), lr=0.0001)
-
-
