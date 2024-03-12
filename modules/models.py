@@ -6,9 +6,6 @@ from transformers import (
     AutoModelForMaskedLM,
     RobertaForMaskedLM,
     T5ForConditionalGeneration,
-    AdamW,
-    RobertaTokenizer,
-    DataCollatorForLanguageModeling,
     )
 import pytorch_lightning as pl
 import torch.optim as optim
@@ -97,5 +94,5 @@ class CodeT5(pl.LightningModule):
         self.log("test_loss", loss, prog_bar=True, logger=True)
         return loss
     
-    def configure_optimizers(self) -> AdamW:
-        return AdamW(self.parameters(), lr=0.0001)
+    def configure_optimizers(self):
+        return torch.optim.AdamW(self.parameters(), lr=0.0001)
