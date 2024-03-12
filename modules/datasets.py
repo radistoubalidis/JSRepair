@@ -41,15 +41,13 @@ class CodeT5Dataset(torch.utils.data.Dataset):
     def __init__(self, encodings, decodings):
         self.input_ids = encodings.input_ids
         self.attention_mask = encodings.attention_mask
-        self.decoder_input_ids = decodings.input_ids
-        self.decoder_attention_mask = decodings.attention_mask
+        self.labels = decodings
 
     def __getitem__(self, idx):
         item = {
             'input_ids': self.input_ids[idx],
             'attention_mask': self.attention_mask[idx],
-            'decoder_input_ids': self.decoder_input_ids[idx],
-            'decoder_attention_mask': self.decoder_attention_mask[idx]
+            'labels': self.labels.input_ids[idx],
         }
         return item
 

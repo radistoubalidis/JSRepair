@@ -1,5 +1,7 @@
+import json
 import sys
 from torch import tensor
+import torch
 from transformers import (
     AutoModelForMaskedLM,
     RobertaForMaskedLM,
@@ -69,19 +71,18 @@ class CodeBertJS(pl.LightningModule):
 class CodeT5(pl.LightningModule): 
     def __init__(self) -> None:
         super().__init__()
-        self.model = T5ForConditionalGeneration.from_pretrained('Salesforce/codet5-base', return_dict=True)
+        self.model = T5ForConditionalGeneration.from_pretrained('Salesforce/codet5-base')
         
     def forward(self, batch):
         output = self.model(
             input_ids=batch['input_ids'],
             attention_mask=batch['attention_mask'],
-            decoder_input_ids=batch['decoder_input_ids'],
-            decoder_attention_mask=batch['decoder_attention_mask']
+            labels=batch['labels'],
         )
-        sys.exit(dir(output.logits))
-        return output
+        return output.loss, output.logits
     
     def training_step(self, batch, batch_idx):
+        torch.set_grad_enabled(True)
         loss, outputs = self.forward(batch)
         self.log("train_loss", loss, prog_bar=True, logger=True)
         return loss

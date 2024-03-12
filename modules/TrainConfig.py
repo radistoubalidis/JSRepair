@@ -1,3 +1,4 @@
+import sys
 import pytorch_lightning as pl
 import torch
 
@@ -15,7 +16,7 @@ def init_checkpoint(cpkt_path, model_dir, version):
 
 def init_logger(log_path, model_dir, version):
     return pl.loggers.CSVLogger(
-        save_dir=log_path,
+        save_dir="/home/disras/projects/JSRepair/logs",
         name=f"{model_dir}_v{version}",
     )
 
@@ -27,4 +28,5 @@ def Trainer(checkpoint: pl.callbacks.ModelCheckpoint, logger: pl.loggers.CSVLogg
         accelerator='cpu',
         # devices=1,
         fast_dev_run=debug,
+        inference_mode=False
     )
