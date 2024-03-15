@@ -68,7 +68,7 @@ class CodeBertJS(pl.LightningModule):
 class CodeT5(pl.LightningModule): 
     def __init__(self) -> None:
         super().__init__()
-        self.model = T5ForConditionalGeneration.from_pretrained('Salesforce/codet5-base')
+        self.model = T5ForConditionalGeneration.from_pretrained('Salesforce/codet5-small')
         
     def forward(self, batch):
         output = self.model(
