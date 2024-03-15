@@ -2,7 +2,7 @@ import sys
 import pytorch_lightning as pl
 import torch
 
-MAX_EPOCHS = 7
+MAX_EPOCHS = 3
 
 def init_checkpoint(cpkt_path, model_dir, version):
     return pl.callbacks.ModelCheckpoint(
