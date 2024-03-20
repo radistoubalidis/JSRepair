@@ -1,6 +1,6 @@
 import json
 import sys
-from torch import tensor
+from torch import is_tensor, tensor
 import torch
 from transformers import (
     AutoModelForMaskedLM,
@@ -66,8 +66,9 @@ class CodeBertJS(pl.LightningModule):
         return optimizer
     
 class CodeT5(pl.LightningModule): 
-    def __init__(self) -> None:
+    def __init__(self, mode: str = 'train') -> None:
         super().__init__()
+        self.mode = mode
         self.model = T5ForConditionalGeneration.from_pretrained('Salesforce/codet5-small')
         
     def forward(self, batch):
@@ -93,6 +94,13 @@ class CodeT5(pl.LightningModule):
         loss, outputs = self.forward(batch)
         self.log("test_loss", loss, prog_bar=True, logger=True)
         return loss
-    
+
+    def predict_step(self, batch, num_beams=3) -> json.Any:
+        return self.model(
+            input_ids=batch['input_ids'],
+            labels=batch['labels'],
+            num_beams=num_beams
+        )
+
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters(), lr=0.0001)
