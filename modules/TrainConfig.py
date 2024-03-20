@@ -14,9 +14,9 @@ def init_checkpoint(cpkt_path, model_dir, version):
         mode='min',
     )
 
-def init_logger(log_path, model_dir, version):
+def init_logger(model_dir, version, log_path='/home/disras/projects/JSRepair/logs'):
     return pl.loggers.CSVLogger(
-        save_dir="/home/disras/projects/JSRepair/logs",
+        save_dir=log_path,
         name=f"{model_dir}_v{version}",
     )
 
