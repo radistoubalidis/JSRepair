@@ -95,7 +95,7 @@ class CodeT5(pl.LightningModule):
         self.log("test_loss", loss, prog_bar=True, logger=True)
         return loss
 
-    def predict_step(self, batch, num_beams=3) -> json.Any:
+    def predict_step(self, batch, num_beams=3):
         return self.model(
             input_ids=batch['input_ids'],
             labels=batch['labels'],
