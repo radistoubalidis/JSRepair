@@ -70,6 +70,7 @@ class CodeT5(pl.LightningModule):
         super().__init__()
         self.mode = mode
         self.model = T5ForConditionalGeneration.from_pretrained('Salesforce/codet5-small')
+        self.save_hyperparameters()
         
     def forward(self, batch):
         output = self.model(
