@@ -1,3 +1,5 @@
+import json
+import os
 import sys
 import pytorch_lightning as pl
 import torch
@@ -30,3 +32,10 @@ def Trainer(checkpoint: pl.callbacks.ModelCheckpoint, logger: pl.loggers.CSVLogg
         fast_dev_run=debug,
         inference_mode=False
     )
+    
+def read_hparams(json_path: str) -> dict:
+    if not os.path.exists(json_path):
+        raise ValueError("json path does not exist.")
+    with open(json_path, 'r') as f:
+        hparams = json.load(f)
+    return hparams
