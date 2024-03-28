@@ -5,7 +5,7 @@ load.py
 checkpoint_test
 log_test
 dataset-demo2.json
-Model Checkpoints
+checkpoints
 postgres_stack
 .env
 samples
