@@ -30,9 +30,10 @@ class CodeRouge:
     
     def rouge_type_to_list(self, type) -> list:
         rouge_type_list = []
-        for score in self.scores:
+        for i, score in enumerate(self.scores):
             rouge_type_list.append(
                 {
+                    'dataset_id': i,
                     "type": type,
                     "precision": score[type].precision,
                     "recall": score[type].recall,
