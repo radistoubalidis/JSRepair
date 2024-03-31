@@ -109,7 +109,7 @@ class CodeT5(pl.LightningModule):
     
     
     
-class CodeT5Custom(pl.LightningModule):
+class T5JSRephraser(pl.LightningModule):
     def __init__(self, t5config: T5Config) -> None:
         super().__init__()
         self.model = T5ForConditionalGeneration(t5config)

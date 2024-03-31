@@ -4,7 +4,7 @@ import sys
 import pytorch_lightning as pl
 import torch
 
-MAX_EPOCHS = 3
+
 
 def init_checkpoint(cpkt_path, model_dir, version):
     return pl.callbacks.ModelCheckpoint(
@@ -22,10 +22,10 @@ def init_logger(model_dir, version, log_path='/home/disras/projects/JSRepair/log
         name=f"{model_dir}_v{version}",
     )
 
-def Trainer(checkpoint: pl.callbacks.ModelCheckpoint, logger: pl.loggers.CSVLogger, debug=False):
+def Trainer(checkpoint: pl.callbacks.ModelCheckpoint, logger: pl.loggers.CSVLogger, num_epochs: int, debug=False):
     return pl.Trainer(
         callbacks=checkpoint,
-        max_epochs=MAX_EPOCHS,
+        max_epochs=num_epochs,
         logger=logger,
         accelerator='gpu' if torch.cuda.is_available() else 'cpu',
         devices=1,
@@ -33,9 +33,10 @@ def Trainer(checkpoint: pl.callbacks.ModelCheckpoint, logger: pl.loggers.CSVLogg
         inference_mode=False
     )
     
-def read_hparams(json_path: str) -> dict:
+def read_hparams(json_path: str, decoder_start_token_id: int) -> dict:
     if not os.path.exists(json_path):
         raise ValueError("json path does not exist.")
     with open(json_path, 'r') as f:
         hparams = json.load(f)
+    hparams['decoder_start_token_id'] = decoder_start_token_id
     return hparams

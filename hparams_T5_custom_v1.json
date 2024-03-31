@@ -1,0 +1,7 @@
+{
+    "dropout" : 0.1,
+    "num_heads" : 6,
+    "num_decoder_layers" : 6,
+    "relative_attention_num_buckets" : 64,
+    "relative_attention_max_distance" : 128
+}
