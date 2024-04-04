@@ -1,9 +1,9 @@
 import json
 import sys
+from regex import B
 from torch import is_tensor, tensor
 import torch
 from transformers import (
-    AutoModelForMaskedLM,
     RobertaForMaskedLM,
     T5ForConditionalGeneration,
     T5Config,
@@ -13,28 +13,33 @@ import torch.optim as optim
 import torch.nn as nn
 
 class CodeBertJS(pl.LightningModule):
-
     def __init__(self) -> None:
         super().__init__()
-        model_path = 'microsoft/codebert-base-mlm'
-        # self.save_hyperparameters()
-        self.encoder = RobertaForMaskedLM.from_pretrained(model_path, return_dict=True)
-        self.encoder = self.encoder.to(self.device)
-
-    def forward(self, input_ids, attention_mask, labels=None):
+        self.encoder = RobertaForMaskedLM.from_pretrained(
+                    'microsoft/codebert-base-mlm',
+                    output_hidden_states=True,
+                    output_attentions=True,
+                    num_beams=5,
+                    num_beam_groups=2,
+                    return_dict=True,
+                )
+        self.criterion = nn.CrossEntropyLoss()
+    
+    def forward(self, input_ids, attention_mask, gt_input_ids):
         encoder_output = self.encoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            labels=labels
         )
-        return encoder_output.loss, encoder_output.logits
+        # Cross Entropy loss between output logits and gt_input_ids
+        loss = self.criterion(encoder_output.logits.view(-1, self.encoder.config.vocab_size), gt_input_ids.view(-1))
+        
+        return loss, encoder_output.logits
 
     def training_step(self, batch, batch_idx):
-        input_ids = batch['input_ids'].to(self.device)
-        attention_mask = batch['attention_mask'].to(self.device)
-        labels = batch['labels'].to(self.device)
-
-        loss, outputs = self.forward(input_ids, attention_mask, labels)
+        input_ids = batch['input_ids']
+        attention_mask = batch['attention_mask']
+        gt_input_ids = batch['gt_input_ids']
+        loss, outputs = self.forward(input_ids, attention_mask, gt_input_ids)
 
         self.log("train_loss", loss, prog_bar=True, logger=True)
         return loss
@@ -42,9 +47,8 @@ class CodeBertJS(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         input_ids = batch['input_ids']
         attention_mask = batch['attention_mask']
-        labels = batch['labels']
-
-        loss, outputs = self.forward(input_ids, attention_mask, labels)
+        gt_input_ids = batch['gt_input_ids']
+        loss, outputs = self.forward(input_ids, attention_mask, gt_input_ids)
 
         self.log("val_loss", loss, prog_bar=True, logger=True)
         return loss
@@ -52,19 +56,16 @@ class CodeBertJS(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         input_ids = batch['input_ids']
         attention_mask = batch['attention_mask']
-        labels = batch['labels']
-
-        loss, outputs = self.forward(input_ids, attention_mask, labels)
+        gt_input_ids = batch['gt_input_ids']
+        loss, outputs = self.forward(input_ids, attention_mask, gt_input_ids)
 
         self.log("test_loss", loss, prog_bar=True, logger=True)
         return loss
 
-    def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        return self(batch)
-
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=0.0001)
         return optimizer
+
     
 class CodeT5(pl.LightningModule): 
     def __init__(self, mode: str = 'train') -> None:

@@ -1,8 +1,11 @@
 import json
 import os
+import random
 import sys
 import pytorch_lightning as pl
 import torch
+from nltk.tokenize import word_tokenize
+from transformers import RobertaTokenizer
 
 
 
@@ -16,7 +19,7 @@ def init_checkpoint(cpkt_path, model_dir, version):
         mode='min',
     )
 
-def init_logger(model_dir, version, log_path='/home/disras/projects/JSRepair/logs'):
+def init_logger(model_dir: str, version: int, log_path: int):
     return pl.loggers.CSVLogger(
         save_dir=log_path,
         name=f"{model_dir}_v{version}",
@@ -40,3 +43,11 @@ def read_hparams(json_path: str, decoder_start_token_id: int) -> dict:
         hparams = json.load(f)
     hparams['decoder_start_token_id'] = decoder_start_token_id
     return hparams
+
+def masker(code: str, tokenizer: RobertaTokenizer, mask_prob: int = 0.15) -> str:
+    tokenized_code = tokenizer.tokenize(code)
+    token_ids = tokenizer.convert_tokens_to_ids(tokenized_code)
+    masked_token_ids = [token_id if random.random() > mask_prob else tokenizer.mask_token_id for token_id in token_ids]
+    masked_tokenized_code = [tokenizer.convert_ids_to_tokens(masked_token_id) for masked_token_id in masked_token_ids]
+    
+    return tokenizer.convert_tokens_to_string(masked_tokenized_code)
