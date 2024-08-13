@@ -12,3 +12,8 @@ samples
 eslint.sh
 node_modules
 eslint_outputs
+metrics
+lightning_logs
+__pycache__
+commitpack-datasets.db
+package*.json
