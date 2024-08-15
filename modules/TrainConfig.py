@@ -4,25 +4,24 @@ import random
 import sys
 import pytorch_lightning as pl
 import torch
-from nltk.tokenize import word_tokenize
 from transformers import RobertaTokenizer
 
 
 
-def init_checkpoint(cpkt_path, model_dir, version):
+def init_checkpoint(cpkt_path: str, model_dir: str, bugType: str, version: int):
     return pl.callbacks.ModelCheckpoint(
         dirpath=cpkt_path,
-        filename=f"{model_dir}_v{version}",
+        filename=f"{model_dir}_{bugType}_v{version}",
         save_top_k=1,
         verbose=True,
         monitor='val_loss',
         mode='min',
     )
 
-def init_logger(model_dir: str, version: int, log_path: int):
+def init_logger(model_dir: str, bugType: str, version: int, log_path: int):
     return pl.loggers.CSVLogger(
         save_dir=log_path,
-        name=f"{model_dir}_v{version}",
+        name=f"{model_dir}_{bugType}_v{version}",
     )
 
 def Trainer(checkpoint: pl.callbacks.ModelCheckpoint, logger: pl.loggers.CSVLogger, num_epochs: int, debug=False):

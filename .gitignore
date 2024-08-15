@@ -16,4 +16,5 @@ metrics
 lightning_logs
 __pycache__
 commitpack-datasets.db
+humanevalpack.db
 package*.json
