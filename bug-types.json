@@ -20,7 +20,7 @@
             ]
         },
         {
-            "type": "funcionality",
+            "type": "functionality",
             "keywords": [
                 "feature",
                 "function",
@@ -85,7 +85,7 @@
             ]
         },
         {
-            "type": "compatibility/performance",
+            "type": "compatibility-performance",
             "keywords": [
                 "compatib",
                 "browser",
@@ -125,7 +125,7 @@
             ]
         },
         {
-            "type": "network/security",
+            "type": "network-security",
             "keywords": [
                 "server",
                 "bind",
