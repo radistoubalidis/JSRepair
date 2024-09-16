@@ -8,6 +8,9 @@ from nltk.stem import PorterStemmer, WordNetLemmatizer
 from collections import Counter
 from df2sql import sqlite2postgres
 from sklearn.model_selection import train_test_split
+from difflib import SequenceMatcher
+import re
+from transformers import RobertaTokenizer
 
 
 def preprocess_text(text: str, get_tokens: bool = True):
@@ -106,3 +109,40 @@ def identify(query: str, sqlite_path: str, psql_convert = False) -> pd.DataFrame
     
     split(df[df['bug_type'].str.len() > 0], sqlite_con=con)
     con.close()
+
+def mask_code_diff(code_before: str, code_after: str, tokenizer = RobertaTokenizer.from_pretrained('microsoft/codebert-base-mlm')):
+    """
+    Αν η αλλαγη στον κωδικα ειναι πανω απο ενα token
+    θα πρεπει να εισαχθουν mask token ισα με το συνολο 
+    token που θα εβγαζε ο roberta tokenizer
+    """
+    tokens_before = tokenizer.tokenize(code_before)
+    tokens_after = tokenizer.tokenize(code_after)
+
+    token_ids_before = tokenizer.convert_tokens_to_ids(tokens_before)
+    token_ids_after = tokenizer.convert_tokens_to_ids(tokens_after)
+
+    mask_token_id = tokenizer.mask_token_id
+    
+    changed_token_indices = get_changed_token_indices(token_ids_before, token_ids_after)
+
+    masked_token_ids_before = token_ids_before.copy() 
+    for i1, i2 in changed_token_indices:
+        for idx in range(i1, i2):
+            masked_token_ids_before[idx] = mask_token_id
+            
+    # Print the masked token IDs for the "before" sequence
+    masked_tokens = tokenizer.convert_ids_to_tokens(masked_token_ids_before)
+    masked_seq = tokenizer.convert_tokens_to_string(masked_tokens)
+    return masked_seq
+    
+
+def get_changed_token_indices(token_ids_before, token_ids_after):
+    sm = SequenceMatcher(None, token_ids_before, token_ids_after)
+    changed_indices = []
+
+    for opcode, i1, i2, j1, j2 in sm.get_opcodes():
+        if opcode != 'equal':
+            changed_indices.append((i1, i2))  # Store only the indices of changes in the before sequence
+
+    return changed_indices

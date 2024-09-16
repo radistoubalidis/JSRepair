@@ -25,15 +25,18 @@ class CodeBertJS(pl.LightningModule):
                 )
         self.criterion = nn.CrossEntropyLoss()
     
-    def forward(self, input_ids, attention_mask, gt_input_ids):
-        encoder_output = self.encoder(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        )
-        # Cross Entropy loss between output logits and gt_input_ids
-        loss = self.criterion(encoder_output.logits.view(-1, self.encoder.config.vocab_size), gt_input_ids.view(-1))
+    def forward(self, input_ids, attention_mask = None, gt_input_ids = None):
+        if attention_mask is not None and gt_input_ids is not None:
+            encoder_output = self.encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+            )
+            # Cross Entropy loss between output logits and gt_input_ids
+            loss = self.criterion(encoder_output.logits.view(-1, self.encoder.config.vocab_size), gt_input_ids.view(-1))
+            return loss, encoder_output.logits
+        else:
+            return self.encoder(input_ids)
         
-        return loss, encoder_output.logits
 
     def training_step(self, batch, batch_idx):
         input_ids = batch['input_ids']
@@ -61,6 +64,11 @@ class CodeBertJS(pl.LightningModule):
 
         self.log("test_loss", loss, prog_bar=True, logger=True)
         return loss
+    
+    def predict_step(self, input_ids, gt_input_ids):
+        return self.model(
+            input_ids=input_ids,
+        )
 
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=0.0001)
@@ -102,7 +110,7 @@ class CodeT5(pl.LightningModule):
         return self.model(
             input_ids=batch['input_ids'],
             labels=batch['labels'],
-            num_beams=num_beams
+            # num_beams=num_beams
         )
 
     def configure_optimizers(self):
