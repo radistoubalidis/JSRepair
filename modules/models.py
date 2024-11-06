@@ -118,9 +118,9 @@ class CodeT5(pl.LightningModule):
             attention_mask=batch['attention_mask'],
             labels=batch['labels'],
         )
-        classification_logits = self.classifier(output.logits[:, -1, :])
-        print(classification_logits)
-        raise ValueError
+        encoder_hidden_states = output.encoder_last_hidden_state
+        pooled_output = torch.mean(encoder_hidden_states, dim=1)
+        classification_logits = self.classifier(pooled_output)
         return output.loss, output.logits, classification_logits
     
     def training_step(self, batch, batch_idx):
