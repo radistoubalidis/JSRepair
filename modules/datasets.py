@@ -5,7 +5,7 @@ class CodeBertDataset(torch.utils.data.Dataset):
         self.input_ids = encodings.input_ids
         self.attention_mask = encodings.attention_mask
         self.gt_input_ids = gt_input_ids
-        self.class_labels = torch.tensor(class_labels)
+        self.class_labels = class_labels
 
     def __getitem__(self, idx):
         item = {
@@ -24,7 +24,7 @@ class CodeT5Dataset(torch.utils.data.Dataset):
         self.input_ids = encodings.input_ids
         self.attention_mask = encodings.attention_mask
         self.labels = decodings
-        self.class_labels = torch.tensor(class_labels)
+        self.class_labels = class_labels
 
     def __getitem__(self, idx):
         item = {
