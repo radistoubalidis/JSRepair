@@ -1,4 +1,3 @@
-import json
 import os
 import sqlite3
 import pandas as pd
@@ -6,10 +5,11 @@ from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import PorterStemmer, WordNetLemmatizer
 from collections import Counter
+
 from df2sql import sqlite2postgres
 from sklearn.model_selection import train_test_split
 from difflib import SequenceMatcher
-import re
+from typing import List
 from transformers import RobertaTokenizer
 
 
@@ -39,6 +39,14 @@ def preprocess_text(text: str, get_tokens: bool = True):
         return lemmatized_tokens
     return " ".join(lemmatized_tokens)
     
+def check_bug(text: str):
+    bug_keywords = [
+        "fix","bug","error","issue","debug","repair","correct","patch","resolve","adjust","handle",
+        "defect","broken","crash","problem","exception","restore","sanitize","refactor","stabilize"
+    ]
+    if any(word in text for word in bug_keywords):
+        return True
+    return False
 
 def create_word_frequency(commit_messages):
     all_words = []
@@ -50,16 +58,18 @@ def create_word_frequency(commit_messages):
 
 def classify_message(msg: str, bugTypes: pd.DataFrame):
     bTypes = []
-    for i,bType in bugTypes.iterrows():
-        bTD = bType.to_dict()
-        if any(word in msg for word in bTD['keywords']):
-            bTypes.append(bTD['type'])
+    bugTypes = bugTypes.to_dict(orient='records')
+    for bT in bugTypes:
+        if any(word in msg for word in bT['keywords']):
+            bTypes.append(bT['type'])
+    if len(bTypes) == 0:
+        return "general"
     return ",".join(bTypes)
 
 def split(df: pd.DataFrame, sqlite_con, test_size = 0.2, psql_convert = False):
     train_df, test_df = train_test_split(df, test_size=test_size, random_state=42)
-    train_df.to_sql('commitpackft_classified_train', con=sqlite_con)
-    test_df.to_sql('commitpackft_classified_test', con=sqlite_con)
+    train_df.to_sql('commitpackft_classified_train', con=sqlite_con, if_exists='replace')
+    test_df.to_sql('commitpackft_classified_test', con=sqlite_con, if_exists='replace')
     if psql_convert:
         sqlite2postgres(train_df, 'commitpackft_classified_train')
         sqlite2postgres(test_df, 'commitpackft_classified_test')
@@ -68,7 +78,7 @@ def identify(query: str, sqlite_path: str, psql_convert = False) -> pd.DataFrame
     if not os.path.exists(sqlite_path):
         raise RuntimeError('Invalid Sqlite path.')
     con = sqlite3.connect(sqlite_path)
-    df = pd.read_sql_query(query, con).set_index('index')
+    df = pd.read_sql_query(query, con)
 
     print("# Create Word Count Dictionary")
     wordsFreq = create_word_frequency(df['message'].tolist())
@@ -82,32 +92,33 @@ def identify(query: str, sqlite_path: str, psql_convert = False) -> pd.DataFrame
     wordCount = pd.DataFrame(wordsCount)
     
     if psql_convert:
-        con.cursor().execute("drop table commitpackft_word_count")
-        wordCount.to_sql('commitpackft_word_count', con)
+        wordCount.to_sql('commitpackft_word_count', con, if_exists='replace')
         sqlite2postgres(wordCount, 'commitpackft_word_count')
 
     # Process Commits and store 
-    print("# Processing Commits")
-    df["processed_messages"] = df["message"].apply(lambda msg: preprocess_text(text=msg, get_tokens=False))
+    print("# Processing Messages")
+    df['processed_message'] = df['message'].apply(lambda msg: preprocess_text(text=msg, get_tokens=False))
+    
+    print("# Detecting bugs")
+    df["is_bug"] = df["processed_message"].apply(lambda msg: check_bug(text=msg))
+    df = df[df['is_bug'] == True]
     if psql_convert:
-        con.cursor().execute('drop table commitpackft_processed_commits')
-        df.to_sql(name='commitpackft_processed_commits', con=con)
-        sqlite2postgres(df, 'commitpackft_processed_commits')
+        df.to_sql(name='commitpackft_bugs', con=con, if_exists='replace')
+        sqlite2postgres(df, 'commitpackft_bugs')
 
     print("# Classifying samples")
     bugTypes = pd.read_sql("select * from bug_types", con)
     bugTypes['keywords'] = bugTypes['keywords'].str.split(',')
-    df['bug_type'] = df["processed_messages"].apply(lambda msg: classify_message(msg=msg, bugTypes=bugTypes))
+    df['bug_type'] = df["processed_message"].apply(lambda msg: classify_message(msg=msg, bugTypes=bugTypes))
     
     if psql_convert:
-        con.cursor().execute("drop table commitpackft_classified")
-        df.to_sql(name='commitpackft_classified' ,con=con)
+        df.to_sql(name='commitpackft_classified' ,con=con, if_exists='replace')
         sqlite2postgres(df, 'commitpackft_classified')
-    
+        
     # split the dataset into train and test
     # only for the samples that are bug identified
     
-    split(df[df['bug_type'].str.len() > 0], sqlite_con=con)
+    split(df[df['bug_type'].str.len() > 0], sqlite_con=con, psql_convert=True)
     con.close()
 
 def mask_code_diff(code_before: str, code_after: str, tokenizer = RobertaTokenizer.from_pretrained('microsoft/codebert-base-mlm')):
@@ -146,3 +157,18 @@ def get_changed_token_indices(token_ids_before, token_ids_after):
             changed_indices.append((i1, i2))  # Store only the indices of changes in the before sequence
 
     return changed_indices
+
+def add_labels(sample_bug_types: str) -> List[int]:
+    class_labels = {
+        "mobile" : 0,
+        "functionality" : 0,
+        "ui-ux" : 0,
+        "compatibility-performance" : 0,
+        "network-security" : 0,
+        "general": 0
+    }
+    sampleBugTypes = ",".join(sample_bug_types)
+    for key in class_labels.keys():
+        if key in sample_bug_types:
+            class_labels[key] = 1
+    return list(class_labels.values())

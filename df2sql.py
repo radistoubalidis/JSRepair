@@ -18,4 +18,4 @@ def sqlite2postgres(df: pd.DataFrame, table_name: str):
     db_name = os.getenv("db_name")
     connection_string = f"postgresql://{db_username}:{db_password}@{db_host}:{db_port}/{db_name}"
     engine = create_engine(connection_string)
-    df.to_sql(table_name, engine)
+    df.to_sql(table_name, engine, if_exists='replace')

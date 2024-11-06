@@ -106,10 +106,10 @@ class CodeBertJS(pl.LightningModule):
 
     
 class CodeT5(pl.LightningModule): 
-    def __init__(self, mode: str = 'train') -> None:
+    def __init__(self, model_dir: str = 'Salesforce/codet5-base', num_classes: int = 6, ) -> None:
         super().__init__()
-        self.mode = mode
-        self.model = T5ForConditionalGeneration.from_pretrained('Salesforce/codet5-small')
+        self.model = T5ForConditionalGeneration.from_pretrained(model_dir)
+        self.classifier = nn.Linear(self.model.config.d_model, num_classes)
         self.save_hyperparameters()
         
     def forward(self, batch):
@@ -118,34 +118,36 @@ class CodeT5(pl.LightningModule):
             attention_mask=batch['attention_mask'],
             labels=batch['labels'],
         )
-        return output.loss, output.logits
+        classification_logits = self.classifier(output.logits[:, -1, :])
+        print(classification_logits)
+        raise ValueError
+        return output.loss, output.logits, classification_logits
     
     def training_step(self, batch, batch_idx):
         torch.set_grad_enabled(True)
-        loss, outputs = self.forward(batch)
-        self.log("train_loss", loss, prog_bar=True, logger=True)
-        return loss
+        loss, outputs, classification_logits = self.forward(batch)
+        classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
+        
+        self.log("train_loss", classification_loss, prog_bar=True, logger=True)
+        return classification_loss
     
     def validation_step(self, batch, batch_idx):
-        loss, outputs = self.forward(batch)
-        self.log("val_loss", loss, prog_bar=True, logger=True)
-        return loss
+        loss, outputs, classification_logits = self.forward(batch)
+        classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
+        self.log("val_loss", classification_loss, prog_bar=True, logger=True)
+        return classification_loss
     
     def test_step(self, batch, batch_idx):
-        loss, outputs = self.forward(batch)
+        loss, outputs, classification_logits = self.forward(batch)
+        classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
         self.log("test_loss", loss, prog_bar=True, logger=True)
-        return loss
-
-    def predict_step(self, batch, num_beams=3):
-        return self.model(
-            input_ids=batch['input_ids'],
-            labels=batch['labels'],
-            # num_beams=num_beams
-        )
+        return classification_loss
 
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters(), lr=0.0001)
     
+    def classification_loss(self, logits, labels):
+        return nn.functional.binary_cross_entropy_with_logits(logits, labels.float())    
     
     
 class T5JSRephraser(pl.LightningModule):
