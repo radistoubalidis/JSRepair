@@ -129,19 +129,19 @@ class CodeT5(pl.LightningModule):
         classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
         
         self.log("train_loss", classification_loss, prog_bar=True, logger=True)
-        return classification_loss
+        return {'classification_loss' : classification_loss, 'loss': loss}
     
     def validation_step(self, batch, batch_idx):
         loss, outputs, classification_logits = self.forward(batch)
         classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
         self.log("val_loss", classification_loss, prog_bar=True, logger=True)
-        return classification_loss
+        return {'classification_loss' : classification_loss, 'loss': loss}
     
     def test_step(self, batch, batch_idx):
         loss, outputs, classification_logits = self.forward(batch)
         classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
         self.log("test_loss", loss, prog_bar=True, logger=True)
-        return classification_loss
+        return {'classification_loss' : classification_loss, 'loss': loss}
 
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters(), lr=0.0001)
