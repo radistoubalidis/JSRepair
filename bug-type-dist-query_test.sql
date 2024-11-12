@@ -2,10 +2,10 @@ select count(*) ,'general' as "bug_type"
 from commitpackft_classified_test
 where bug_type like '%general%'
 union 
--- select count(*), 'mobile' as "bug_type" 
--- from commitpackft_classified_test
--- where bug_type like '%mobile%'
--- union
+select count(*), 'mobile' as "bug_type" 
+from commitpackft_classified_test
+where bug_type like '%mobile%'
+union
 select count(*), 'functionality' as "bug_type" 
 from commitpackft_classified_test
 where bug_type like '%functionality%'
