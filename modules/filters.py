@@ -160,15 +160,15 @@ def get_changed_token_indices(token_ids_before, token_ids_after):
 
 def add_labels(sample_bug_types: str) -> List[int]:
     class_labels = {
-        "mobile" : 0,
-        "functionality" : 0,
-        "ui-ux" : 0,
-        "compatibility-performance" : 0,
-        "network-security" : 0,
-        "general": 0
+        "mobile" : 0.,
+        "functionality" : 0.,
+        "ui-ux" : 0.,
+        "compatibility-performance" : 0.,
+        "network-security" : 0.,
+        "general" : 0.,
     }
     sampleBugTypes = ",".join(sample_bug_types)
     for key in class_labels.keys():
         if key in sample_bug_types:
-            class_labels[key] = 1
+            class_labels[key] = 1.
     return list(class_labels.values())

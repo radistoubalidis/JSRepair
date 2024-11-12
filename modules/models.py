@@ -1,19 +1,25 @@
-import json
-import sys
+import os
+from typing import Any
 from regex import B
-from torch import is_tensor, tensor
-import torch
+from torch import Value, is_tensor, tensor
+from datetime import datetime
+from difflib import unified_diff
+from lightning.pytorch.utilities.types import STEP_OUTPUT
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
 from transformers import (
     RobertaForMaskedLM,
     T5ForConditionalGeneration,
-    T5Config,
     RobertaTokenizer
     )
+import torch
 import pytorch_lightning as pl
 import torch.optim as optim
 import torch.nn as nn
-from datetime import datetime
-from difflib import unified_diff
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+
 
 class CodeBertJS(pl.LightningModule):
     def __init__(self, tokenizer: RobertaTokenizer) -> None:
@@ -106,11 +112,18 @@ class CodeBertJS(pl.LightningModule):
 
     
 class CodeT5(pl.LightningModule): 
-    def __init__(self, model_dir: str = 'Salesforce/codet5-base', num_classes: int = 6, ) -> None:
+    def __init__(self, model_dir: str = 'Salesforce/codet5-base', num_classes: int = 6) -> None:
         super().__init__()
+        self.model_dir = model_dir
+        self.tokenizer = RobertaTokenizer.from_pretrained(self.model_dir)
         self.model = T5ForConditionalGeneration.from_pretrained(model_dir)
         self.classifier = nn.Linear(self.model.config.d_model, num_classes)
+        self.predictions = []
+        self.labels = []
+        self.classes = ["mobile","functionality","ui-ux","compatibility-performance","network-security","general"]
         self.save_hyperparameters()
+        self.confusion_matrices = []
+        self.generated_codes = []
         
     def forward(self, batch):
         output = self.model(
@@ -141,10 +154,60 @@ class CodeT5(pl.LightningModule):
         loss, outputs, classification_logits = self.forward(batch)
         classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
         self.log("test_loss", loss, prog_bar=True, logger=True)
-        return {'classification_loss' : classification_loss, 'loss': loss}
+        return {
+            'logits': outputs, 
+            'classification_logits': classification_logits,
+            'classification_loss' : classification_loss, 
+            'loss': loss
+        }
+        
+    def on_test_batch_end(self, outputs: STEP_OUTPUT, batch: Any, batch_idx: int):
+        probs = torch.sigmoid(outputs['classification_logits'])
+        preds = (probs > 0.5).float()
+        self.generated_codes.append(self.decode_output(outputs['logits']))
+        self.predictions.append(preds)
+        self.labels.append(batch['class_labels'])
+    
+    def on_test_epoch_end(self):
+        all_predictions = torch.cat(self.predictions).cpu().numpy()
+        all_labels = torch.cat(self.labels).cpu().numpy()
+        self.conf_matrix_plot(all_labels,all_predictions)
 
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters(), lr=0.0001)
     
     def classification_loss(self, logits, labels):
         return nn.functional.binary_cross_entropy_with_logits(logits, labels.float())    
+    
+    def conf_matrix_plot(self, all_labels, all_predictions):
+        model_name = os.environ['MODEL_NAME']
+        version = int(os.environ['VERSION'])
+        metrics_path = os.environ['METRICS_PATH']
+        if not os.path.exists(f"{metrics_path}/{model_name}_v{version}"):
+            os.mkdir(f"{metrics_path}/{model_name}_v{version}")
+        
+        num_classes = all_labels.shape[1]
+        n_cols = 2
+        n_rows = (num_classes + n_cols - 1) // n_cols
+
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
+        axes = axes.flatten()
+
+        for i in range(num_classes):
+            cm = confusion_matrix(all_labels[:, i], all_predictions[:, i])
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False, ax=axes[i])
+            axes[i].set_xlabel('Predicted')
+            axes[i].set_ylabel('Ground Truth')
+            axes[i].set_title(f'Confusion Matrix for {self.classes[i]}')
+
+        for j in range(num_classes, len(axes)):
+            fig.delaxes(axes[j])
+
+        plt.tight_layout()
+        plt.savefig(f"{metrics_path}/{model_name}_v{version}/confusion_matrices.png")
+        plt.show()
+        
+    def decode_output(self, output) -> str:
+        tokens = torch.argmax(output, dim=-1)
+        code = self.tokenizer.batch_decode(tokens, skip_special_tokens=True)[0]
+        return code

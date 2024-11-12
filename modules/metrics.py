@@ -21,9 +21,9 @@ class CodeRouge:
         
         for r in self.rouge_types:
             self.avgs[f"avg_{r}"] = scoring.Score(**{
-                "precision": average([x.precision for x in scores_pd[r].tolist()]),
-                "recall": average([x.recall for x in scores_pd[r].tolist()]), 
-                "fmeasure": average([x.fmeasure for x in scores_pd[r].tolist()])
+                "precision": round(average([x.precision for x in scores_pd[r].tolist()]), 4),
+                "recall": round(average([x.recall for x in scores_pd[r].tolist()]), 4), 
+                "fmeasure": round(average([x.fmeasure for x in scores_pd[r].tolist()]), 4)
             })
         
         return self.avgs
