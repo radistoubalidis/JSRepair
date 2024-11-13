@@ -138,6 +138,7 @@ class CodeT5(pl.LightningModule):
     
     def training_step(self, batch, batch_idx):
         torch.set_grad_enabled(True)
+        self.model.gradient_checkpointing_enable()
         loss, outputs, classification_logits = self.forward(batch)
         classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
         
