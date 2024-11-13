@@ -32,7 +32,8 @@ def Trainer(checkpoint: pl.callbacks.ModelCheckpoint, logger: pl.loggers.CSVLogg
         accelerator='gpu' if torch.cuda.is_available() else 'cpu',
         devices=1,
         fast_dev_run=debug,
-        inference_mode=False
+        inference_mode=False,
+        precision=16
     )
     
 def read_hparams(json_path: str, decoder_start_token_id: int) -> dict:
