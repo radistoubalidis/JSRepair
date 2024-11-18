@@ -33,7 +33,7 @@ def Trainer(checkpoint: pl.callbacks.ModelCheckpoint, logger: pl.loggers.CSVLogg
         devices=1,
         fast_dev_run=debug,
         inference_mode=False,
-        precision=16
+        precision='16-mixed'
     )
     
 def read_hparams(json_path: str, decoder_start_token_id: int) -> dict:

@@ -112,7 +112,7 @@ class CodeBertJS(pl.LightningModule):
 
     
 class CodeT5(pl.LightningModule): 
-    def __init__(self, model_dir: str = 'Salesforce/codet5-base', num_classes: int = 6) -> None:
+    def __init__(self, model_dir: str = 'Salesforce/codet5-base', num_classes: int = 6, dropout_rate=0.1) -> None:
         super().__init__()
         self.model_dir = model_dir
         self.tokenizer = RobertaTokenizer.from_pretrained(self.model_dir)
@@ -124,6 +124,8 @@ class CodeT5(pl.LightningModule):
         self.save_hyperparameters()
         self.confusion_matrices = []
         self.generated_codes = []
+        self.dropout_rate = dropout_rate
+        self.dropout = nn.Dropout(p=self.dropout_rate)
         
     def forward(self, batch):
         output = self.model(
@@ -131,8 +133,12 @@ class CodeT5(pl.LightningModule):
             attention_mask=batch['attention_mask'],
             labels=batch['labels'],
         )
+        # 1.Get the last hidden state of the output 
+        # 2. Normilize it
+        # 3. Pass it through a dropout layer before the classifier
         encoder_hidden_states = output.encoder_last_hidden_state
         pooled_output = torch.mean(encoder_hidden_states, dim=1)
+        pooled_output = self.dropout(pooled_output)
         classification_logits = self.classifier(pooled_output)
         return output.loss, output.logits, classification_logits
     
