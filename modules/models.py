@@ -119,7 +119,7 @@ class CodeT5(pl.LightningModule):
         self.model_dir = model_dir
         self.tokenizer = RobertaTokenizer.from_pretrained(self.model_dir)
         self.model = T5ForConditionalGeneration.from_pretrained(model_dir)
-        self.classifier = nn.Linear(self.model.config.d_model, num_classes)
+        self.classifier = nn.Linear(256, num_classes)
         self.predictions = []
         self.labels = []
         self.classes = ["mobile","functionality","ui-ux","compatibility-performance","network-security","general"] if num_classes == 6  else ["functionality","ui-ux","compatibility-performance","network-security","general"]
