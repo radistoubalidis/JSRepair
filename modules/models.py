@@ -130,7 +130,7 @@ class CodeT5(pl.LightningModule):
         self.dropout = nn.Dropout(p=self.dropout_rate)
         self.hidden_layer = nn.Linear(self.model.config.d_model, 256)
         self.activation = nn.ReLU()
-        self.class_weights = class_weights
+        self.class_weights = torch.tensor(class_weights)
         
     def forward(self, batch):
         output = self.model(
