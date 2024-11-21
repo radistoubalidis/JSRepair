@@ -126,6 +126,11 @@ class CodeT5(pl.LightningModule):
         self.model_dir = model_dir
         self.tokenizer = RobertaTokenizer.from_pretrained(self.model_dir)
         self.model = T5ForConditionalGeneration.from_pretrained(model_dir)
+        # Freeze encoder layers
+        self.unfreeze_on_epochs = [3,5]
+        for param in self.model.parameters():
+            param.requires_grad = False
+            
         self.predictions = []
         self.labels = []
         self.classes = ["mobile","functionality","ui-ux","compatibility-performance","network-security","general"] if num_classes == 6  else ["functionality","ui-ux","compatibility-performance","network-security","general"]
@@ -158,9 +163,9 @@ class CodeT5(pl.LightningModule):
         normalized_states = self.layer_norm(encoder_hidden_states)
         # Pooling: Average of the sequence length
         pooled_output = torch.mean(normalized_states, dim=1)
+        # Pass it through a dropout layer before the classifier
+        pooled_output = self.dropout(pooled_output)
         if self.with_activation:
-            # Pass it through a dropout layer before the classifier
-            pooled_output = self.dropout(pooled_output)
             # Pass it through an activation function using a hidden layer
             pooled_output = self.activation(self.hidden_layer(pooled_output))
         
@@ -175,6 +180,11 @@ class CodeT5(pl.LightningModule):
         
         self.log("train_loss", classification_loss, prog_bar=True, logger=True)
         return {'classification_loss' : classification_loss, 'loss': loss}
+    
+    def on_train_epoch_end(self):
+        if self.current_epoch in self.unfreeze_on_epochs:
+            num_layers_to_unfreeze = (self.current_epoch - 2)
+            self.unfreeze_layers(num_layers_to_unfreeze)
     
     def validation_step(self, batch, batch_idx):
         loss, outputs, classification_logits = self.forward(batch)
@@ -247,3 +257,9 @@ class CodeT5(pl.LightningModule):
         tokens = torch.argmax(output, dim=-1)
         code = self.tokenizer.batch_decode(tokens, skip_special_tokens=True)[0]
         return code
+    
+    def unfreeze_layers(self, num_layers_to_unfreeze=2):
+        encoder_layers = list(self.model.encoder.block)
+        for layer in encoder_layers[-num_layers_to_unfreeze:]:
+            for param in layer.parameters():
+                param.requires_grad = True
