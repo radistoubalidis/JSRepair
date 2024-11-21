@@ -208,7 +208,7 @@ class CodeT5(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(), lr=1e-5)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
-        return [optimizer], [scheduler]
+        return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "val_loss"}
     
     def classification_loss(self, logits, labels):
         return nn.functional.binary_cross_entropy_with_logits(
