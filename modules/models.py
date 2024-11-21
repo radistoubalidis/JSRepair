@@ -122,7 +122,7 @@ class CodeT5(pl.LightningModule):
         self.classifier = nn.Linear(self.model.config.d_model, num_classes)
         self.predictions = []
         self.labels = []
-        self.classes = ["mobile","functionality","ui-ux","compatibility-performance","network-security","general"]
+        self.classes = ["mobile","functionality","ui-ux","compatibility-performance","network-security","general"] if num_classes == 6  else ["functionality","ui-ux","compatibility-performance","network-security","general"]
         self.save_hyperparameters()
         self.confusion_matrices = []
         self.generated_codes = []
