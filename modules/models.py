@@ -206,8 +206,8 @@ class CodeT5(pl.LightningModule):
         self.conf_matrix_plot(all_labels,all_predictions)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=5e-5)
-        scheduler = get_scheduler('linear', optimizer, num_warmup_steps=500, num_training_steps=3)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=1e-5)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
         return [optimizer], [scheduler]
     
     def classification_loss(self, logits, labels):
