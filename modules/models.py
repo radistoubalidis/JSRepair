@@ -1,5 +1,6 @@
 import os
 from typing import Any
+import numpy as np
 from regex import B
 from torch import Value, is_tensor, tensor
 from datetime import datetime
@@ -10,7 +11,8 @@ from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from transformers import (
     RobertaForMaskedLM,
     T5ForConditionalGeneration,
-    RobertaTokenizer
+    RobertaTokenizer,
+    get_scheduler
     )
 import torch
 import pytorch_lightning as pl
@@ -112,7 +114,7 @@ class CodeBertJS(pl.LightningModule):
 
     
 class CodeT5(pl.LightningModule): 
-    def __init__(self, model_dir: str = 'Salesforce/codet5-base', num_classes: int = 6, dropout_rate=0.1) -> None:
+    def __init__(self, class_weights: np.array, model_dir: str = 'Salesforce/codet5-base', num_classes: int = 6, dropout_rate=0.1, ) -> None:
         super().__init__()
         self.model_dir = model_dir
         self.tokenizer = RobertaTokenizer.from_pretrained(self.model_dir)
@@ -126,6 +128,9 @@ class CodeT5(pl.LightningModule):
         self.generated_codes = []
         self.dropout_rate = dropout_rate
         self.dropout = nn.Dropout(p=self.dropout_rate)
+        self.hidden_layer = nn.Linear(self.model.config.d_model, 256)
+        self.activation = nn.ReLU()
+        self.class_weights = class_weights
         
     def forward(self, batch):
         output = self.model(
@@ -134,12 +139,15 @@ class CodeT5(pl.LightningModule):
             labels=batch['labels'],
         )
         # 1.Get the last hidden state of the output 
-        # 2. Normilize it
-        # 3. Pass it through a dropout layer before the classifier
         encoder_hidden_states = output.encoder_last_hidden_state
+        # 2. Normilize it
         pooled_output = torch.mean(encoder_hidden_states, dim=1)
+        # 3. Pass it through a dropout layer before the classifier
         pooled_output = self.dropout(pooled_output)
-        classification_logits = self.classifier(pooled_output)
+        # 4. Pass it through an activation function using a hidden layer
+        hidden_output = self.activation(self.hidden_layer(pooled_output))
+        
+        classification_logits = self.classifier(hidden_output)
         return output.loss, output.logits, classification_logits
     
     def training_step(self, batch, batch_idx):
@@ -181,10 +189,14 @@ class CodeT5(pl.LightningModule):
         self.conf_matrix_plot(all_labels,all_predictions)
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=0.0001)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=5e-5)
+        scheduler = get_scheduler('linear', optimizer, num_warmup_steps=500, num_training_steps=3)
+        return [optimizer], [scheduler]
     
     def classification_loss(self, logits, labels):
-        return nn.functional.binary_cross_entropy_with_logits(logits, labels.float())    
+        return nn.functional.binary_cross_entropy_with_logits(
+            logits, labels.float(), pos_weight=self.class_weights.to(logits.device)
+            )
     
     def conf_matrix_plot(self, all_labels, all_predictions):
         model_name = os.environ['MODEL_NAME']
