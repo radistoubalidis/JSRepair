@@ -114,12 +114,18 @@ class CodeBertJS(pl.LightningModule):
 
     
 class CodeT5(pl.LightningModule): 
-    def __init__(self, class_weights: np.array, model_dir: str = 'Salesforce/codet5-base', num_classes: int = 6, dropout_rate=0.1, ) -> None:
+    def __init__(
+        self, 
+        class_weights: np.array, 
+        model_dir: str = 'Salesforce/codet5-base', 
+        num_classes: int = 6, 
+        dropout_rate=0.1,
+        with_activation: bool = False
+        ) -> None:
         super().__init__()
         self.model_dir = model_dir
         self.tokenizer = RobertaTokenizer.from_pretrained(self.model_dir)
         self.model = T5ForConditionalGeneration.from_pretrained(model_dir)
-        self.classifier = nn.Linear(256, num_classes)
         self.predictions = []
         self.labels = []
         self.classes = ["mobile","functionality","ui-ux","compatibility-performance","network-security","general"] if num_classes == 6  else ["functionality","ui-ux","compatibility-performance","network-security","general"]
@@ -127,10 +133,18 @@ class CodeT5(pl.LightningModule):
         self.confusion_matrices = []
         self.generated_codes = []
         self.dropout_rate = dropout_rate
+        self.layer_norm = nn.LayerNorm(self.model.config.d_model)
         self.dropout = nn.Dropout(p=self.dropout_rate)
-        self.hidden_layer = nn.Linear(self.model.config.d_model, 256)
-        self.activation = nn.ReLU()
+        self.with_activation = with_activation
+        if self.with_activation:
+            self.hidden_layer = nn.Linear(self.model.config.d_model, 256)
+            self.activation = nn.ReLU()
+            self.classifier = nn.Linear(256, num_classes)
+        else:
+            self.classifier = nn.Linear(self.model.config.d_model, num_classes)
+            
         self.class_weights = torch.tensor(class_weights)
+        
         
     def forward(self, batch):
         output = self.model(
@@ -138,16 +152,19 @@ class CodeT5(pl.LightningModule):
             attention_mask=batch['attention_mask'],
             labels=batch['labels'],
         )
-        # 1.Get the last hidden state of the output 
+        # Get the last hidden state of the encoder output 
         encoder_hidden_states = output.encoder_last_hidden_state
-        # 2. Normilize it
-        pooled_output = torch.mean(encoder_hidden_states, dim=1)
-        # 3. Pass it through a dropout layer before the classifier
-        pooled_output = self.dropout(pooled_output)
-        # 4. Pass it through an activation function using a hidden layer
-        hidden_output = self.activation(self.hidden_layer(pooled_output))
+        # Apply layer normalization
+        normalized_states = self.layer_norm(encoder_hidden_states)
+        # Pooling: Average of the sequence length
+        pooled_output = torch.mean(normalized_states, dim=1)
+        if self.with_activation:
+            # Pass it through a dropout layer before the classifier
+            pooled_output = self.dropout(pooled_output)
+            # Pass it through an activation function using a hidden layer
+            pooled_output = self.activation(self.hidden_layer(pooled_output))
         
-        classification_logits = self.classifier(hidden_output)
+        classification_logits = self.classifier(pooled_output)
         return output.loss, output.logits, classification_logits
     
     def training_step(self, batch, batch_idx):
