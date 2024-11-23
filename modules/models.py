@@ -153,19 +153,19 @@ class CodeT5(pl.LightningModule):
             labels=batch['labels'],
         )
         # Get the last hidden state of the encoder output 
-        encoder_hidden_states = output.encoder_last_hidden_state
+        hidden_states_output = output.encoder_last_hidden_state
         if self.with_layer_norm:
             # Apply layer normalization
-            pooled_output = self.layer_norm(encoder_hidden_states)
+            hidden_states_output = self.layer_norm(hidden_states_output)
         # Pooling: Average of the sequence length
-        pooled_output = torch.mean(pooled_output, dim=1)
+        hidden_states_output = torch.mean(hidden_states_output, dim=1)
         # Pass it through a dropout layer before the classifier
-        pooled_output = self.dropout(pooled_output)
+        hidden_states_output = self.dropout(hidden_states_output)
         if self.with_activation:
             # Pass it through an activation function using a hidden layer
-            pooled_output = self.activation(self.hidden_layer(pooled_output))
+            hidden_states_output = self.activation(self.hidden_layer(hidden_states_output))
         
-        classification_logits = self.classifier(pooled_output)
+        classification_logits = self.classifier(hidden_states_output)
         return output.loss, output.logits, classification_logits
     
     def training_step(self, batch, batch_idx):
