@@ -1,265 +1,2210 @@
-import os
-from typing import Any
-import numpy as np
-from regex import B
-from torch import Value, is_tensor, tensor
-from datetime import datetime
-from difflib import unified_diff
-from lightning.pytorch.utilities.types import STEP_OUTPUT
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
-
-from transformers import (
-    RobertaForMaskedLM,
-    T5ForConditionalGeneration,
-    RobertaTokenizer,
-    get_scheduler
-    )
-import torch
-import pytorch_lightning as pl
-import torch.optim as optim
-import torch.nn as nn
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-
-
-class CodeBertJS(pl.LightningModule):
-    def __init__(self, tokenizer: RobertaTokenizer) -> None:
-        super().__init__()
-        self.encoder = RobertaForMaskedLM.from_pretrained(
-                    'microsoft/codebert-base-mlm',
-                    output_hidden_states=True,
-                    output_attentions=True,
-                    num_beams=5,
-                    num_beam_groups=2,
-                    return_dict=True,
-                )
-        self.criterion = nn.CrossEntropyLoss()
-        self.tokenizer = tokenizer
-        self.last_validation_batch = None
-        self.last_validation_output = None
-    
-    def forward(self, input_ids, attention_mask = None, gt_input_ids = None):
-        if attention_mask is not None and gt_input_ids is not None:
-            encoder_output = self.encoder(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-            )
-            # Cross Entropy loss between output logits and gt_input_ids
-            loss = self.criterion(encoder_output.logits.view(-1, self.encoder.config.vocab_size), gt_input_ids.view(-1))
-            return loss, encoder_output.logits
-        else:
-            return self.encoder(input_ids)
-        
-
-    def training_step(self, batch, batch_idx):
-        input_ids = batch['input_ids']
-        attention_mask = batch['attention_mask']
-        gt_input_ids = batch['gt_input_ids']
-        loss, outputs = self.forward(input_ids, attention_mask, gt_input_ids)
-
-        self.log("train_loss", loss, prog_bar=True, logger=True)
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        input_ids = batch['input_ids']
-        attention_mask = batch['attention_mask']
-        gt_input_ids = batch['gt_input_ids']
-        self.last_validation_batch = batch
-        loss, outputs = self.forward(input_ids, attention_mask, gt_input_ids)
-        self.last_validation_output = outputs
-        self.log("val_loss", loss, prog_bar=True, logger=True)
-        return loss
-
-    def test_step(self, batch, batch_idx):
-        input_ids = batch['input_ids']
-        attention_mask = batch['attention_mask']
-        gt_input_ids = batch['gt_input_ids']
-        loss, outputs = self.forward(input_ids, attention_mask, gt_input_ids)
-
-        self.log("test_loss", loss, prog_bar=True, logger=True)
-        return loss
-    
-    def predict_step(self, input_ids, gt_input_ids):
-        return self.model(
-            input_ids=input_ids,
-        )
-        
-    def on_validation_end(self):
-        last_input_tokens = self.tokenizer.convert_ids_to_tokens(self.last_validation_batch['input_ids'][-1])
-        last_gt_tokens = self.tokenizer.convert_ids_to_tokens(self.last_validation_batch['gt_input_ids'][-1])
-        last_output_tokens = torch.argmax(self.last_validation_output, dim=-1).tolist()
-        last_input_seq = self.tokenizer.convert_tokens_to_string(last_input_tokens).replace('<s>','').replace('</s>','').replace('<pad>','')
-        last_gt_seq = self.tokenizer.convert_tokens_to_string(last_gt_tokens).replace('<s>','').replace('</s>','').replace('<pad>','')
-        codeDiff = unified_diff(last_input_seq, last_gt_seq)
-        codeDiffStr = "\n".join(codeDiff)
-        last_output_seq = self.tokenizer.batch_decode(last_output_tokens[-1], skip_special_tokens=True)
-        print(last_output_seq)
-        raise ValueError
-        last_output_seq = self.tokenizer.convert_tokens_to_string(last_output_seq)
-        
-        log_msg = f"""
-        Val Batch Sample:
-        --------------------Output Code-------------------
-        {last_output_seq}
-        --------------------Code Diff---------------------
-        {codeDiffStr}
-        """
-        with open(f"train-{datetime.today().strftime('%Y-%m-%d')}-CodeBert.log", 'a') as f:
-            f.write(log_msg)
-
-    def configure_optimizers(self) -> optim.Adam:
-        optimizer = optim.Adam(self.parameters(), lr=0.0001)
-        return optimizer
-
-    
-class CodeT5(pl.LightningModule): 
-    def __init__(
-        self, 
-        class_weights: np.array, 
-        model_dir: str = 'Salesforce/codet5-base', 
-        num_classes: int = 6, 
-        dropout_rate=0.1,
-        with_activation: bool = False
-        ) -> None:
-        super().__init__()
-        self.model_dir = model_dir
-        self.tokenizer = RobertaTokenizer.from_pretrained(self.model_dir)
-        self.model = T5ForConditionalGeneration.from_pretrained(model_dir)
-        # Freeze encoder layers
-        self.unfreeze_on_epochs = [3,5]
-        for param in self.model.parameters():
-            param.requires_grad = False
-            
-        self.predictions = []
-        self.labels = []
-        self.classes = ["mobile","functionality","ui-ux","compatibility-performance","network-security","general"] if num_classes == 6  else ["functionality","ui-ux","compatibility-performance","network-security","general"]
-        self.save_hyperparameters()
-        self.confusion_matrices = []
-        self.generated_codes = []
-        self.dropout_rate = dropout_rate
-        self.layer_norm = nn.LayerNorm(self.model.config.d_model)
-        self.dropout = nn.Dropout(p=self.dropout_rate)
-        self.with_activation = with_activation
-        if self.with_activation:
-            self.hidden_layer = nn.Linear(self.model.config.d_model, 256)
-            self.activation = nn.ReLU()
-            self.classifier = nn.Linear(256, num_classes)
-        else:
-            self.classifier = nn.Linear(self.model.config.d_model, num_classes)
-            
-        self.class_weights = torch.tensor(class_weights)
-        
-        
-    def forward(self, batch):
-        output = self.model(
-            input_ids=batch['input_ids'],
-            attention_mask=batch['attention_mask'],
-            labels=batch['labels'],
-        )
-        # Get the last hidden state of the encoder output 
-        encoder_hidden_states = output.encoder_last_hidden_state
-        # Apply layer normalization
-        normalized_states = self.layer_norm(encoder_hidden_states)
-        # Pooling: Average of the sequence length
-        pooled_output = torch.mean(normalized_states, dim=1)
-        # Pass it through a dropout layer before the classifier
-        pooled_output = self.dropout(pooled_output)
-        if self.with_activation:
-            # Pass it through an activation function using a hidden layer
-            pooled_output = self.activation(self.hidden_layer(pooled_output))
-        
-        classification_logits = self.classifier(pooled_output)
-        return output.loss, output.logits, classification_logits
-    
-    def training_step(self, batch, batch_idx):
-        torch.set_grad_enabled(True)
-        self.model.gradient_checkpointing_enable()
-        loss, outputs, classification_logits = self.forward(batch)
-        classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
-        
-        self.log("train_loss", classification_loss, prog_bar=True, logger=True)
-        return {'classification_loss' : classification_loss, 'loss': loss}
-    
-    def on_train_epoch_end(self):
-        if self.current_epoch in self.unfreeze_on_epochs:
-            num_layers_to_unfreeze = (self.current_epoch - 2)
-            self.unfreeze_layers(num_layers_to_unfreeze)
-    
-    def validation_step(self, batch, batch_idx):
-        loss, outputs, classification_logits = self.forward(batch)
-        classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
-        self.log("val_loss", classification_loss, prog_bar=True, logger=True)
-        return {'classification_loss' : classification_loss, 'loss': loss}
-    
-    def test_step(self, batch, batch_idx):
-        loss, outputs, classification_logits = self.forward(batch)
-        classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
-        self.log("test_loss", loss, prog_bar=True, logger=True)
-        return {
-            'logits': outputs, 
-            'classification_logits': classification_logits,
-            'classification_loss' : classification_loss, 
-            'loss': loss
+{
+  "cells": [
+    {
+      "cell_type": "code",
+      "execution_count": 1,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "Pa7PA6UMH2pn",
+        "outputId": "b955ee94-9e5c-4419-c11f-17d1f5837c8b"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Mounted at /content/drive\n"
+          ]
         }
-        
-    def on_test_batch_end(self, outputs: STEP_OUTPUT, batch: Any, batch_idx: int):
-        probs = torch.sigmoid(outputs['classification_logits'])
-        preds = (probs > 0.5).float()
-        self.generated_codes.append(self.decode_output(outputs['logits']))
-        self.predictions.append(preds)
-        self.labels.append(batch['class_labels'])
-    
-    def on_test_epoch_end(self):
-        all_predictions = torch.cat(self.predictions).cpu().numpy()
-        all_labels = torch.cat(self.labels).cpu().numpy()
-        self.conf_matrix_plot(all_labels,all_predictions)
-
-    def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=1e-5)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
-        return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "val_loss"}
-    
-    def classification_loss(self, logits, labels):
-        return nn.functional.binary_cross_entropy_with_logits(
-            logits, labels.float(), pos_weight=self.class_weights.to(logits.device)
-            )
-    
-    def conf_matrix_plot(self, all_labels, all_predictions):
-        model_name = os.environ['MODEL_NAME']
-        version = int(os.environ['VERSION'])
-        metrics_path = os.environ['METRICS_PATH']
-        if not os.path.exists(f"{metrics_path}/{model_name}_v{version}"):
-            os.mkdir(f"{metrics_path}/{model_name}_v{version}")
-        
-        num_classes = all_labels.shape[1]
-        n_cols = 2
-        n_rows = (num_classes + n_cols - 1) // n_cols
-
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
-        axes = axes.flatten()
-
-        for i in range(num_classes):
-            cm = confusion_matrix(all_labels[:, i], all_predictions[:, i])
-            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False, ax=axes[i])
-            axes[i].set_xlabel('Predicted')
-            axes[i].set_ylabel('Ground Truth')
-            axes[i].set_title(f'Confusion Matrix for {self.classes[i]}')
-
-        for j in range(num_classes, len(axes)):
-            fig.delaxes(axes[j])
-
-        plt.tight_layout()
-        plt.savefig(f"{metrics_path}/{model_name}_v{version}/confusion_matrices.png")
-        plt.show()
-        
-    def decode_output(self, output) -> str:
-        tokens = torch.argmax(output, dim=-1)
-        code = self.tokenizer.batch_decode(tokens, skip_special_tokens=True)[0]
-        return code
-    
-    def unfreeze_layers(self, num_layers_to_unfreeze=2):
-        encoder_layers = list(self.model.encoder.block)
-        for layer in encoder_layers[-num_layers_to_unfreeze:]:
-            for param in layer.parameters():
-                param.requires_grad = True
+      ],
+      "source": [
+        "from google.colab import drive\n",
+        "drive.mount('/content/drive')"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 2,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "collapsed": true,
+        "id": "eOOMW_SjH4WG",
+        "outputId": "61b7773c-9d1a-4535-9f8a-b5d821892b5e"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Cloning into 'JSRepair'...\n",
+            "remote: Enumerating objects: 382, done.\u001b[K\n",
+            "remote: Counting objects: 100% (155/155), done.\u001b[K\n",
+            "remote: Compressing objects: 100% (104/104), done.\u001b[K\n",
+            "remote: Total 382 (delta 102), reused 99 (delta 51), pack-reused 227 (from 1)\u001b[K\n",
+            "Receiving objects: 100% (382/382), 1.48 MiB | 9.66 MiB/s, done.\n",
+            "Resolving deltas: 100% (246/246), done.\n",
+            "Collecting pytorch_lightning\n",
+            "  Downloading pytorch_lightning-2.4.0-py3-none-any.whl.metadata (21 kB)\n",
+            "Requirement already satisfied: torch>=2.1.0 in /usr/local/lib/python3.10/dist-packages (from pytorch_lightning) (2.5.1+cu121)\n",
+            "Requirement already satisfied: tqdm>=4.57.0 in /usr/local/lib/python3.10/dist-packages (from pytorch_lightning) (4.66.6)\n",
+            "Requirement already satisfied: PyYAML>=5.4 in /usr/local/lib/python3.10/dist-packages (from pytorch_lightning) (6.0.2)\n",
+            "Requirement already satisfied: fsspec>=2022.5.0 in /usr/local/lib/python3.10/dist-packages (from fsspec[http]>=2022.5.0->pytorch_lightning) (2024.10.0)\n",
+            "Collecting torchmetrics>=0.7.0 (from pytorch_lightning)\n",
+            "  Downloading torchmetrics-1.6.0-py3-none-any.whl.metadata (20 kB)\n",
+            "Requirement already satisfied: packaging>=20.0 in /usr/local/lib/python3.10/dist-packages (from pytorch_lightning) (24.2)\n",
+            "Requirement already satisfied: typing-extensions>=4.4.0 in /usr/local/lib/python3.10/dist-packages (from pytorch_lightning) (4.12.2)\n",
+            "Collecting lightning-utilities>=0.10.0 (from pytorch_lightning)\n",
+            "  Downloading lightning_utilities-0.11.9-py3-none-any.whl.metadata (5.2 kB)\n",
+            "Requirement already satisfied: aiohttp!=4.0.0a0,!=4.0.0a1 in /usr/local/lib/python3.10/dist-packages (from fsspec[http]>=2022.5.0->pytorch_lightning) (3.11.2)\n",
+            "Requirement already satisfied: setuptools in /usr/local/lib/python3.10/dist-packages (from lightning-utilities>=0.10.0->pytorch_lightning) (75.1.0)\n",
+            "Requirement already satisfied: filelock in /usr/local/lib/python3.10/dist-packages (from torch>=2.1.0->pytorch_lightning) (3.16.1)\n",
+            "Requirement already satisfied: networkx in /usr/local/lib/python3.10/dist-packages (from torch>=2.1.0->pytorch_lightning) (3.4.2)\n",
+            "Requirement already satisfied: jinja2 in /usr/local/lib/python3.10/dist-packages (from torch>=2.1.0->pytorch_lightning) (3.1.4)\n",
+            "Requirement already satisfied: sympy==1.13.1 in /usr/local/lib/python3.10/dist-packages (from torch>=2.1.0->pytorch_lightning) (1.13.1)\n",
+            "Requirement already satisfied: mpmath<1.4,>=1.1.0 in /usr/local/lib/python3.10/dist-packages (from sympy==1.13.1->torch>=2.1.0->pytorch_lightning) (1.3.0)\n",
+            "Requirement already satisfied: numpy>1.20.0 in /usr/local/lib/python3.10/dist-packages (from torchmetrics>=0.7.0->pytorch_lightning) (1.26.4)\n",
+            "Requirement already satisfied: aiohappyeyeballs>=2.3.0 in /usr/local/lib/python3.10/dist-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]>=2022.5.0->pytorch_lightning) (2.4.3)\n",
+            "Requirement already satisfied: aiosignal>=1.1.2 in /usr/local/lib/python3.10/dist-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]>=2022.5.0->pytorch_lightning) (1.3.1)\n",
+            "Requirement already satisfied: attrs>=17.3.0 in /usr/local/lib/python3.10/dist-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]>=2022.5.0->pytorch_lightning) (24.2.0)\n",
+            "Requirement already satisfied: frozenlist>=1.1.1 in /usr/local/lib/python3.10/dist-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]>=2022.5.0->pytorch_lightning) (1.5.0)\n",
+            "Requirement already satisfied: multidict<7.0,>=4.5 in /usr/local/lib/python3.10/dist-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]>=2022.5.0->pytorch_lightning) (6.1.0)\n",
+            "Requirement already satisfied: propcache>=0.2.0 in /usr/local/lib/python3.10/dist-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]>=2022.5.0->pytorch_lightning) (0.2.0)\n",
+            "Requirement already satisfied: yarl<2.0,>=1.17.0 in /usr/local/lib/python3.10/dist-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]>=2022.5.0->pytorch_lightning) (1.17.2)\n",
+            "Requirement already satisfied: async-timeout<6.0,>=4.0 in /usr/local/lib/python3.10/dist-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]>=2022.5.0->pytorch_lightning) (4.0.3)\n",
+            "Requirement already satisfied: MarkupSafe>=2.0 in /usr/local/lib/python3.10/dist-packages (from jinja2->torch>=2.1.0->pytorch_lightning) (3.0.2)\n",
+            "Requirement already satisfied: idna>=2.0 in /usr/local/lib/python3.10/dist-packages (from yarl<2.0,>=1.17.0->aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]>=2022.5.0->pytorch_lightning) (3.10)\n",
+            "Downloading pytorch_lightning-2.4.0-py3-none-any.whl (815 kB)\n",
+            "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m815.2/815.2 kB\u001b[0m \u001b[31m15.6 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\n",
+            "\u001b[?25hDownloading lightning_utilities-0.11.9-py3-none-any.whl (28 kB)\n",
+            "Downloading torchmetrics-1.6.0-py3-none-any.whl (926 kB)\n",
+            "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m926.4/926.4 kB\u001b[0m \u001b[31m44.7 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\n",
+            "\u001b[?25hInstalling collected packages: lightning-utilities, torchmetrics, pytorch_lightning\n",
+            "Successfully installed lightning-utilities-0.11.9 pytorch_lightning-2.4.0 torchmetrics-1.6.0\n",
+            "Collecting lightning\n",
+            "  Downloading lightning-2.4.0-py3-none-any.whl.metadata (38 kB)\n",
+            "Requirement already satisfied: PyYAML<8.0,>=5.4 in /usr/local/lib/python3.10/dist-packages (from lightning) (6.0.2)\n",
+            "Requirement already satisfied: fsspec<2026.0,>=2022.5.0 in /usr/local/lib/python3.10/dist-packages (from fsspec[http]<2026.0,>=2022.5.0->lightning) (2024.10.0)\n",
+            "Requirement already satisfied: lightning-utilities<2.0,>=0.10.0 in /usr/local/lib/python3.10/dist-packages (from lightning) (0.11.9)\n",
+            "Requirement already satisfied: packaging<25.0,>=20.0 in /usr/local/lib/python3.10/dist-packages (from lightning) (24.2)\n",
+            "Requirement already satisfied: torch<4.0,>=2.1.0 in /usr/local/lib/python3.10/dist-packages (from lightning) (2.5.1+cu121)\n",
+            "Requirement already satisfied: torchmetrics<3.0,>=0.7.0 in /usr/local/lib/python3.10/dist-packages (from lightning) (1.6.0)\n",
+            "Requirement already satisfied: tqdm<6.0,>=4.57.0 in /usr/local/lib/python3.10/dist-packages (from lightning) (4.66.6)\n",
+            "Requirement already satisfied: typing-extensions<6.0,>=4.4.0 in /usr/local/lib/python3.10/dist-packages (from lightning) (4.12.2)\n",
+            "Requirement already satisfied: pytorch-lightning in /usr/local/lib/python3.10/dist-packages (from lightning) (2.4.0)\n",
+            "Requirement already satisfied: aiohttp!=4.0.0a0,!=4.0.0a1 in /usr/local/lib/python3.10/dist-packages (from fsspec[http]<2026.0,>=2022.5.0->lightning) (3.11.2)\n",
+            "Requirement already satisfied: setuptools in /usr/local/lib/python3.10/dist-packages (from lightning-utilities<2.0,>=0.10.0->lightning) (75.1.0)\n",
+            "Requirement already satisfied: filelock in /usr/local/lib/python3.10/dist-packages (from torch<4.0,>=2.1.0->lightning) (3.16.1)\n",
+            "Requirement already satisfied: networkx in /usr/local/lib/python3.10/dist-packages (from torch<4.0,>=2.1.0->lightning) (3.4.2)\n",
+            "Requirement already satisfied: jinja2 in /usr/local/lib/python3.10/dist-packages (from torch<4.0,>=2.1.0->lightning) (3.1.4)\n",
+            "Requirement already satisfied: sympy==1.13.1 in /usr/local/lib/python3.10/dist-packages (from torch<4.0,>=2.1.0->lightning) (1.13.1)\n",
+            "Requirement already satisfied: mpmath<1.4,>=1.1.0 in /usr/local/lib/python3.10/dist-packages (from sympy==1.13.1->torch<4.0,>=2.1.0->lightning) (1.3.0)\n",
+            "Requirement already satisfied: numpy>1.20.0 in /usr/local/lib/python3.10/dist-packages (from torchmetrics<3.0,>=0.7.0->lightning) (1.26.4)\n",
+            "Requirement already satisfied: aiohappyeyeballs>=2.3.0 in /usr/local/lib/python3.10/dist-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]<2026.0,>=2022.5.0->lightning) (2.4.3)\n",
+            "Requirement already satisfied: aiosignal>=1.1.2 in /usr/local/lib/python3.10/dist-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]<2026.0,>=2022.5.0->lightning) (1.3.1)\n",
+            "Requirement already satisfied: attrs>=17.3.0 in /usr/local/lib/python3.10/dist-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]<2026.0,>=2022.5.0->lightning) (24.2.0)\n",
+            "Requirement already satisfied: frozenlist>=1.1.1 in /usr/local/lib/python3.10/dist-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]<2026.0,>=2022.5.0->lightning) (1.5.0)\n",
+            "Requirement already satisfied: multidict<7.0,>=4.5 in /usr/local/lib/python3.10/dist-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]<2026.0,>=2022.5.0->lightning) (6.1.0)\n",
+            "Requirement already satisfied: propcache>=0.2.0 in /usr/local/lib/python3.10/dist-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]<2026.0,>=2022.5.0->lightning) (0.2.0)\n",
+            "Requirement already satisfied: yarl<2.0,>=1.17.0 in /usr/local/lib/python3.10/dist-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]<2026.0,>=2022.5.0->lightning) (1.17.2)\n",
+            "Requirement already satisfied: async-timeout<6.0,>=4.0 in /usr/local/lib/python3.10/dist-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]<2026.0,>=2022.5.0->lightning) (4.0.3)\n",
+            "Requirement already satisfied: MarkupSafe>=2.0 in /usr/local/lib/python3.10/dist-packages (from jinja2->torch<4.0,>=2.1.0->lightning) (3.0.2)\n",
+            "Requirement already satisfied: idna>=2.0 in /usr/local/lib/python3.10/dist-packages (from yarl<2.0,>=1.17.0->aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]<2026.0,>=2022.5.0->lightning) (3.10)\n",
+            "Downloading lightning-2.4.0-py3-none-any.whl (810 kB)\n",
+            "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m811.0/811.0 kB\u001b[0m \u001b[31m15.4 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\n",
+            "\u001b[?25hInstalling collected packages: lightning\n",
+            "Successfully installed lightning-2.4.0\n",
+            "Collecting datasets\n",
+            "  Downloading datasets-3.1.0-py3-none-any.whl.metadata (20 kB)\n",
+            "Requirement already satisfied: filelock in /usr/local/lib/python3.10/dist-packages (from datasets) (3.16.1)\n",
+            "Requirement already satisfied: numpy>=1.17 in /usr/local/lib/python3.10/dist-packages (from datasets) (1.26.4)\n",
+            "Requirement already satisfied: pyarrow>=15.0.0 in /usr/local/lib/python3.10/dist-packages (from datasets) (17.0.0)\n",
+            "Collecting dill<0.3.9,>=0.3.0 (from datasets)\n",
+            "  Downloading dill-0.3.8-py3-none-any.whl.metadata (10 kB)\n",
+            "Requirement already satisfied: pandas in /usr/local/lib/python3.10/dist-packages (from datasets) (2.2.2)\n",
+            "Requirement already satisfied: requests>=2.32.2 in /usr/local/lib/python3.10/dist-packages (from datasets) (2.32.3)\n",
+            "Requirement already satisfied: tqdm>=4.66.3 in /usr/local/lib/python3.10/dist-packages (from datasets) (4.66.6)\n",
+            "Collecting xxhash (from datasets)\n",
+            "  Downloading xxhash-3.5.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (12 kB)\n",
+            "Collecting multiprocess<0.70.17 (from datasets)\n",
+            "  Downloading multiprocess-0.70.16-py310-none-any.whl.metadata (7.2 kB)\n",
+            "Collecting fsspec<=2024.9.0,>=2023.1.0 (from fsspec[http]<=2024.9.0,>=2023.1.0->datasets)\n",
+            "  Downloading fsspec-2024.9.0-py3-none-any.whl.metadata (11 kB)\n",
+            "Requirement already satisfied: aiohttp in /usr/local/lib/python3.10/dist-packages (from datasets) (3.11.2)\n",
+            "Requirement already satisfied: huggingface-hub>=0.23.0 in /usr/local/lib/python3.10/dist-packages (from datasets) (0.26.2)\n",
+            "Requirement already satisfied: packaging in /usr/local/lib/python3.10/dist-packages (from datasets) (24.2)\n",
+            "Requirement already satisfied: pyyaml>=5.1 in /usr/local/lib/python3.10/dist-packages (from datasets) (6.0.2)\n",
+            "Requirement already satisfied: aiohappyeyeballs>=2.3.0 in /usr/local/lib/python3.10/dist-packages (from aiohttp->datasets) (2.4.3)\n",
+            "Requirement already satisfied: aiosignal>=1.1.2 in /usr/local/lib/python3.10/dist-packages (from aiohttp->datasets) (1.3.1)\n",
+            "Requirement already satisfied: attrs>=17.3.0 in /usr/local/lib/python3.10/dist-packages (from aiohttp->datasets) (24.2.0)\n",
+            "Requirement already satisfied: frozenlist>=1.1.1 in /usr/local/lib/python3.10/dist-packages (from aiohttp->datasets) (1.5.0)\n",
+            "Requirement already satisfied: multidict<7.0,>=4.5 in /usr/local/lib/python3.10/dist-packages (from aiohttp->datasets) (6.1.0)\n",
+            "Requirement already satisfied: propcache>=0.2.0 in /usr/local/lib/python3.10/dist-packages (from aiohttp->datasets) (0.2.0)\n",
+            "Requirement already satisfied: yarl<2.0,>=1.17.0 in /usr/local/lib/python3.10/dist-packages (from aiohttp->datasets) (1.17.2)\n",
+            "Requirement already satisfied: async-timeout<6.0,>=4.0 in /usr/local/lib/python3.10/dist-packages (from aiohttp->datasets) (4.0.3)\n",
+            "Requirement already satisfied: typing-extensions>=3.7.4.3 in /usr/local/lib/python3.10/dist-packages (from huggingface-hub>=0.23.0->datasets) (4.12.2)\n",
+            "Requirement already satisfied: charset-normalizer<4,>=2 in /usr/local/lib/python3.10/dist-packages (from requests>=2.32.2->datasets) (3.4.0)\n",
+            "Requirement already satisfied: idna<4,>=2.5 in /usr/local/lib/python3.10/dist-packages (from requests>=2.32.2->datasets) (3.10)\n",
+            "Requirement already satisfied: urllib3<3,>=1.21.1 in /usr/local/lib/python3.10/dist-packages (from requests>=2.32.2->datasets) (2.2.3)\n",
+            "Requirement already satisfied: certifi>=2017.4.17 in /usr/local/lib/python3.10/dist-packages (from requests>=2.32.2->datasets) (2024.8.30)\n",
+            "Requirement already satisfied: python-dateutil>=2.8.2 in /usr/local/lib/python3.10/dist-packages (from pandas->datasets) (2.8.2)\n",
+            "Requirement already satisfied: pytz>=2020.1 in /usr/local/lib/python3.10/dist-packages (from pandas->datasets) (2024.2)\n",
+            "Requirement already satisfied: tzdata>=2022.7 in /usr/local/lib/python3.10/dist-packages (from pandas->datasets) (2024.2)\n",
+            "Requirement already satisfied: six>=1.5 in /usr/local/lib/python3.10/dist-packages (from python-dateutil>=2.8.2->pandas->datasets) (1.16.0)\n",
+            "Downloading datasets-3.1.0-py3-none-any.whl (480 kB)\n",
+            "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m480.6/480.6 kB\u001b[0m \u001b[31m10.4 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\n",
+            "\u001b[?25hDownloading dill-0.3.8-py3-none-any.whl (116 kB)\n",
+            "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m116.3/116.3 kB\u001b[0m \u001b[31m12.5 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\n",
+            "\u001b[?25hDownloading fsspec-2024.9.0-py3-none-any.whl (179 kB)\n",
+            "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m179.3/179.3 kB\u001b[0m \u001b[31m16.8 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\n",
+            "\u001b[?25hDownloading multiprocess-0.70.16-py310-none-any.whl (134 kB)\n",
+            "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m134.8/134.8 kB\u001b[0m \u001b[31m12.9 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\n",
+            "\u001b[?25hDownloading xxhash-3.5.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (194 kB)\n",
+            "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m194.1/194.1 kB\u001b[0m \u001b[31m17.4 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\n",
+            "\u001b[?25hInstalling collected packages: xxhash, fsspec, dill, multiprocess, datasets\n",
+            "  Attempting uninstall: fsspec\n",
+            "    Found existing installation: fsspec 2024.10.0\n",
+            "    Uninstalling fsspec-2024.10.0:\n",
+            "      Successfully uninstalled fsspec-2024.10.0\n",
+            "\u001b[31mERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behaviour is the source of the following dependency conflicts.\n",
+            "gcsfs 2024.10.0 requires fsspec==2024.10.0, but you have fsspec 2024.9.0 which is incompatible.\u001b[0m\u001b[31m\n",
+            "\u001b[0mSuccessfully installed datasets-3.1.0 dill-0.3.8 fsspec-2024.9.0 multiprocess-0.70.16 xxhash-3.5.0\n",
+            "Collecting python-dotenv\n",
+            "  Downloading python_dotenv-1.0.1-py3-none-any.whl.metadata (23 kB)\n",
+            "Downloading python_dotenv-1.0.1-py3-none-any.whl (19 kB)\n",
+            "Installing collected packages: python-dotenv\n",
+            "Successfully installed python-dotenv-1.0.1\n"
+          ]
+        }
+      ],
+      "source": [
+        "!git clone https://github.com/radistoubalidis/JSRepair.git\n",
+        "\n",
+        "!pip install pytorch_lightning\n",
+        "!python -m pip install lightning\n",
+        "!pip install datasets\n",
+        "!pip install python-dotenv"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 1,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "eOMP9ujKQr0H",
+        "outputId": "7163c133-d0e3-48a6-9a24-5b0878690a71"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "/content/JSRepair\n"
+          ]
+        }
+      ],
+      "source": [
+        "%cd ./JSRepair"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 2,
+      "metadata": {
+        "id": "mi-6we72Hti5"
+      },
+      "outputs": [],
+      "source": [
+        "import os\n",
+        "import pandas as pd\n",
+        "import sqlite3\n",
+        "import torch\n",
+        "import numpy as np\n",
+        "from transformers import (\n",
+        "    RobertaTokenizer,\n",
+        ")\n",
+        "from modules.models import CodeT5\n",
+        "from modules.datasets import CodeT5Dataset\n",
+        "from modules.TrainConfig import init_logger, init_checkpoint, Trainer\n",
+        "from modules.filters import add_labels\n",
+        "from torch.utils.data import DataLoader\n",
+        "from sklearn.model_selection import train_test_split\n",
+        "from typing import List"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 3,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "I9liNYnTHti6",
+        "outputId": "e7064e59-d0c3-43a3-c51e-7d8f589602a2"
+      },
+      "outputs": [
+        {
+          "name": "stdout",
+          "output_type": "stream",
+          "text": [
+            "Training version: 3\n",
+            "Load from existing model (type cpkt path if true): \n",
+            "Debug Run (1,0): 1\n",
+            "Type dropout rate for classifier: 0.15\n",
+            "Consider mobile class (1,0): 0\n"
+          ]
+        }
+      ],
+      "source": [
+        "HF_DIR = 'Salesforce/codet5-base'\n",
+        "TOKENIZER_MAX_LENGTH = 512 #int(input('Tokenizer Max length: '))\n",
+        "DB_PATH = 'commitpack-datasets.db' if os.path.exists('commitpack-datasets.db') else '/content/drive/MyDrive/Thesis/commitpack-datasets.db'\n",
+        "DB_TABLE = 'commitpackft_classified_train'\n",
+        "if not os.path.exists(DB_PATH):\n",
+        "    raise RuntimeError('sqlite3 path doesnt exist.')\n",
+        "VAL_SIZE = 0.3\n",
+        "LOG_PATH = 'logs' if os.path.exists('logs') else '/content/drive/MyDrive/Thesis/logs'\n",
+        "VERSION = int(input('Training version: '))\n",
+        "LOAD_FROM_CPKT = input(\"Load from existing model (type cpkt path if true): \")\n",
+        "DEBUG = True if int(input('Debug Run (1,0): ')) == 1 else False\n",
+        "BATCH_SIZE = 2 if DEBUG is True else 32\n",
+        "CPKT_PATH = 'checkpoints' if os.path.exists('checkpoints') else '/content/drive/MyDrive/Thesis/checkpoints'\n",
+        "DROPOUT_RATE = float(input('Type dropout rate for classifier: '))\n",
+        "WITH_MOBILE = True if int(input('Consider mobile class (1,0): ')) == 1 else False\n",
+        "\n",
+        "if WITH_MOBILE:\n",
+        "    classLabels = {\n",
+        "        \"mobile\" : 0.,\n",
+        "        \"functionality\" : 0.,\n",
+        "        \"ui-ux\" : 0.,\n",
+        "        \"compatibility-performance\" : 0.,\n",
+        "        \"network-security\" : 0.,\n",
+        "        \"general\": 0.\n",
+        "    }\n",
+        "else:\n",
+        "    classLabels = {\n",
+        "        \"functionality\" : 0.,\n",
+        "        \"ui-ux\" : 0.,\n",
+        "        \"compatibility-performance\" : 0.,\n",
+        "        \"network-security\" : 0.,\n",
+        "        \"general\": 0.\n",
+        "    }\n",
+        "\n",
+        "num_classes = len(classLabels.keys())\n",
+        "MODEL_DIR = f\"CodeT5JS_{num_classes}classes\"\n",
+        "con = sqlite3.connect(DB_PATH)"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "bY7b8IO-JG2A"
+      },
+      "source": [
+        "# Types of Bugs distribution in samples"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 4,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/",
+          "height": 238
+        },
+        "id": "urdA7KyTHti7",
+        "outputId": "ba94181f-77d2-47bc-a8db-471be2de3c8a"
+      },
+      "outputs": [
+        {
+          "output_type": "execute_result",
+          "data": {
+            "text/plain": [
+              "   count(*)                   bug_type\n",
+              "0        90                     mobile\n",
+              "1      2862                    general\n",
+              "2      3147                      ui-ux\n",
+              "3      3159           network-security\n",
+              "4      4396  compatibility-performance\n",
+              "5      4532              functionality"
+            ],
+            "text/html": [
+              "\n",
+              "  <div id=\"df-f6487e6f-a905-4ded-b911-f0798657e449\" class=\"colab-df-container\">\n",
+              "    <div>\n",
+              "<style scoped>\n",
+              "    .dataframe tbody tr th:only-of-type {\n",
+              "        vertical-align: middle;\n",
+              "    }\n",
+              "\n",
+              "    .dataframe tbody tr th {\n",
+              "        vertical-align: top;\n",
+              "    }\n",
+              "\n",
+              "    .dataframe thead th {\n",
+              "        text-align: right;\n",
+              "    }\n",
+              "</style>\n",
+              "<table border=\"1\" class=\"dataframe\">\n",
+              "  <thead>\n",
+              "    <tr style=\"text-align: right;\">\n",
+              "      <th></th>\n",
+              "      <th>count(*)</th>\n",
+              "      <th>bug_type</th>\n",
+              "    </tr>\n",
+              "  </thead>\n",
+              "  <tbody>\n",
+              "    <tr>\n",
+              "      <th>0</th>\n",
+              "      <td>90</td>\n",
+              "      <td>mobile</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <th>1</th>\n",
+              "      <td>2862</td>\n",
+              "      <td>general</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <th>2</th>\n",
+              "      <td>3147</td>\n",
+              "      <td>ui-ux</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <th>3</th>\n",
+              "      <td>3159</td>\n",
+              "      <td>network-security</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <th>4</th>\n",
+              "      <td>4396</td>\n",
+              "      <td>compatibility-performance</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <th>5</th>\n",
+              "      <td>4532</td>\n",
+              "      <td>functionality</td>\n",
+              "    </tr>\n",
+              "  </tbody>\n",
+              "</table>\n",
+              "</div>\n",
+              "    <div class=\"colab-df-buttons\">\n",
+              "\n",
+              "  <div class=\"colab-df-container\">\n",
+              "    <button class=\"colab-df-convert\" onclick=\"convertToInteractive('df-f6487e6f-a905-4ded-b911-f0798657e449')\"\n",
+              "            title=\"Convert this dataframe to an interactive table.\"\n",
+              "            style=\"display:none;\">\n",
+              "\n",
+              "  <svg xmlns=\"http://www.w3.org/2000/svg\" height=\"24px\" viewBox=\"0 -960 960 960\">\n",
+              "    <path d=\"M120-120v-720h720v720H120Zm60-500h600v-160H180v160Zm220 220h160v-160H400v160Zm0 220h160v-160H400v160ZM180-400h160v-160H180v160Zm440 0h160v-160H620v160ZM180-180h160v-160H180v160Zm440 0h160v-160H620v160Z\"/>\n",
+              "  </svg>\n",
+              "    </button>\n",
+              "\n",
+              "  <style>\n",
+              "    .colab-df-container {\n",
+              "      display:flex;\n",
+              "      gap: 12px;\n",
+              "    }\n",
+              "\n",
+              "    .colab-df-convert {\n",
+              "      background-color: #E8F0FE;\n",
+              "      border: none;\n",
+              "      border-radius: 50%;\n",
+              "      cursor: pointer;\n",
+              "      display: none;\n",
+              "      fill: #1967D2;\n",
+              "      height: 32px;\n",
+              "      padding: 0 0 0 0;\n",
+              "      width: 32px;\n",
+              "    }\n",
+              "\n",
+              "    .colab-df-convert:hover {\n",
+              "      background-color: #E2EBFA;\n",
+              "      box-shadow: 0px 1px 2px rgba(60, 64, 67, 0.3), 0px 1px 3px 1px rgba(60, 64, 67, 0.15);\n",
+              "      fill: #174EA6;\n",
+              "    }\n",
+              "\n",
+              "    .colab-df-buttons div {\n",
+              "      margin-bottom: 4px;\n",
+              "    }\n",
+              "\n",
+              "    [theme=dark] .colab-df-convert {\n",
+              "      background-color: #3B4455;\n",
+              "      fill: #D2E3FC;\n",
+              "    }\n",
+              "\n",
+              "    [theme=dark] .colab-df-convert:hover {\n",
+              "      background-color: #434B5C;\n",
+              "      box-shadow: 0px 1px 3px 1px rgba(0, 0, 0, 0.15);\n",
+              "      filter: drop-shadow(0px 1px 2px rgba(0, 0, 0, 0.3));\n",
+              "      fill: #FFFFFF;\n",
+              "    }\n",
+              "  </style>\n",
+              "\n",
+              "    <script>\n",
+              "      const buttonEl =\n",
+              "        document.querySelector('#df-f6487e6f-a905-4ded-b911-f0798657e449 button.colab-df-convert');\n",
+              "      buttonEl.style.display =\n",
+              "        google.colab.kernel.accessAllowed ? 'block' : 'none';\n",
+              "\n",
+              "      async function convertToInteractive(key) {\n",
+              "        const element = document.querySelector('#df-f6487e6f-a905-4ded-b911-f0798657e449');\n",
+              "        const dataTable =\n",
+              "          await google.colab.kernel.invokeFunction('convertToInteractive',\n",
+              "                                                    [key], {});\n",
+              "        if (!dataTable) return;\n",
+              "\n",
+              "        const docLinkHtml = 'Like what you see? Visit the ' +\n",
+              "          '<a target=\"_blank\" href=https://colab.research.google.com/notebooks/data_table.ipynb>data table notebook</a>'\n",
+              "          + ' to learn more about interactive tables.';\n",
+              "        element.innerHTML = '';\n",
+              "        dataTable['output_type'] = 'display_data';\n",
+              "        await google.colab.output.renderOutput(dataTable, element);\n",
+              "        const docLink = document.createElement('div');\n",
+              "        docLink.innerHTML = docLinkHtml;\n",
+              "        element.appendChild(docLink);\n",
+              "      }\n",
+              "    </script>\n",
+              "  </div>\n",
+              "\n",
+              "\n",
+              "<div id=\"df-283e76ff-5ee8-4738-9754-060d9d4fa336\">\n",
+              "  <button class=\"colab-df-quickchart\" onclick=\"quickchart('df-283e76ff-5ee8-4738-9754-060d9d4fa336')\"\n",
+              "            title=\"Suggest charts\"\n",
+              "            style=\"display:none;\">\n",
+              "\n",
+              "<svg xmlns=\"http://www.w3.org/2000/svg\" height=\"24px\"viewBox=\"0 0 24 24\"\n",
+              "     width=\"24px\">\n",
+              "    <g>\n",
+              "        <path d=\"M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z\"/>\n",
+              "    </g>\n",
+              "</svg>\n",
+              "  </button>\n",
+              "\n",
+              "<style>\n",
+              "  .colab-df-quickchart {\n",
+              "      --bg-color: #E8F0FE;\n",
+              "      --fill-color: #1967D2;\n",
+              "      --hover-bg-color: #E2EBFA;\n",
+              "      --hover-fill-color: #174EA6;\n",
+              "      --disabled-fill-color: #AAA;\n",
+              "      --disabled-bg-color: #DDD;\n",
+              "  }\n",
+              "\n",
+              "  [theme=dark] .colab-df-quickchart {\n",
+              "      --bg-color: #3B4455;\n",
+              "      --fill-color: #D2E3FC;\n",
+              "      --hover-bg-color: #434B5C;\n",
+              "      --hover-fill-color: #FFFFFF;\n",
+              "      --disabled-bg-color: #3B4455;\n",
+              "      --disabled-fill-color: #666;\n",
+              "  }\n",
+              "\n",
+              "  .colab-df-quickchart {\n",
+              "    background-color: var(--bg-color);\n",
+              "    border: none;\n",
+              "    border-radius: 50%;\n",
+              "    cursor: pointer;\n",
+              "    display: none;\n",
+              "    fill: var(--fill-color);\n",
+              "    height: 32px;\n",
+              "    padding: 0;\n",
+              "    width: 32px;\n",
+              "  }\n",
+              "\n",
+              "  .colab-df-quickchart:hover {\n",
+              "    background-color: var(--hover-bg-color);\n",
+              "    box-shadow: 0 1px 2px rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15);\n",
+              "    fill: var(--button-hover-fill-color);\n",
+              "  }\n",
+              "\n",
+              "  .colab-df-quickchart-complete:disabled,\n",
+              "  .colab-df-quickchart-complete:disabled:hover {\n",
+              "    background-color: var(--disabled-bg-color);\n",
+              "    fill: var(--disabled-fill-color);\n",
+              "    box-shadow: none;\n",
+              "  }\n",
+              "\n",
+              "  .colab-df-spinner {\n",
+              "    border: 2px solid var(--fill-color);\n",
+              "    border-color: transparent;\n",
+              "    border-bottom-color: var(--fill-color);\n",
+              "    animation:\n",
+              "      spin 1s steps(1) infinite;\n",
+              "  }\n",
+              "\n",
+              "  @keyframes spin {\n",
+              "    0% {\n",
+              "      border-color: transparent;\n",
+              "      border-bottom-color: var(--fill-color);\n",
+              "      border-left-color: var(--fill-color);\n",
+              "    }\n",
+              "    20% {\n",
+              "      border-color: transparent;\n",
+              "      border-left-color: var(--fill-color);\n",
+              "      border-top-color: var(--fill-color);\n",
+              "    }\n",
+              "    30% {\n",
+              "      border-color: transparent;\n",
+              "      border-left-color: var(--fill-color);\n",
+              "      border-top-color: var(--fill-color);\n",
+              "      border-right-color: var(--fill-color);\n",
+              "    }\n",
+              "    40% {\n",
+              "      border-color: transparent;\n",
+              "      border-right-color: var(--fill-color);\n",
+              "      border-top-color: var(--fill-color);\n",
+              "    }\n",
+              "    60% {\n",
+              "      border-color: transparent;\n",
+              "      border-right-color: var(--fill-color);\n",
+              "    }\n",
+              "    80% {\n",
+              "      border-color: transparent;\n",
+              "      border-right-color: var(--fill-color);\n",
+              "      border-bottom-color: var(--fill-color);\n",
+              "    }\n",
+              "    90% {\n",
+              "      border-color: transparent;\n",
+              "      border-bottom-color: var(--fill-color);\n",
+              "    }\n",
+              "  }\n",
+              "</style>\n",
+              "\n",
+              "  <script>\n",
+              "    async function quickchart(key) {\n",
+              "      const quickchartButtonEl =\n",
+              "        document.querySelector('#' + key + ' button');\n",
+              "      quickchartButtonEl.disabled = true;  // To prevent multiple clicks.\n",
+              "      quickchartButtonEl.classList.add('colab-df-spinner');\n",
+              "      try {\n",
+              "        const charts = await google.colab.kernel.invokeFunction(\n",
+              "            'suggestCharts', [key], {});\n",
+              "      } catch (error) {\n",
+              "        console.error('Error during call to suggestCharts:', error);\n",
+              "      }\n",
+              "      quickchartButtonEl.classList.remove('colab-df-spinner');\n",
+              "      quickchartButtonEl.classList.add('colab-df-quickchart-complete');\n",
+              "    }\n",
+              "    (() => {\n",
+              "      let quickchartButtonEl =\n",
+              "        document.querySelector('#df-283e76ff-5ee8-4738-9754-060d9d4fa336 button');\n",
+              "      quickchartButtonEl.style.display =\n",
+              "        google.colab.kernel.accessAllowed ? 'block' : 'none';\n",
+              "    })();\n",
+              "  </script>\n",
+              "</div>\n",
+              "\n",
+              "  <div id=\"id_7bfd2bb9-90b3-43e6-8502-d566eaee1a53\">\n",
+              "    <style>\n",
+              "      .colab-df-generate {\n",
+              "        background-color: #E8F0FE;\n",
+              "        border: none;\n",
+              "        border-radius: 50%;\n",
+              "        cursor: pointer;\n",
+              "        display: none;\n",
+              "        fill: #1967D2;\n",
+              "        height: 32px;\n",
+              "        padding: 0 0 0 0;\n",
+              "        width: 32px;\n",
+              "      }\n",
+              "\n",
+              "      .colab-df-generate:hover {\n",
+              "        background-color: #E2EBFA;\n",
+              "        box-shadow: 0px 1px 2px rgba(60, 64, 67, 0.3), 0px 1px 3px 1px rgba(60, 64, 67, 0.15);\n",
+              "        fill: #174EA6;\n",
+              "      }\n",
+              "\n",
+              "      [theme=dark] .colab-df-generate {\n",
+              "        background-color: #3B4455;\n",
+              "        fill: #D2E3FC;\n",
+              "      }\n",
+              "\n",
+              "      [theme=dark] .colab-df-generate:hover {\n",
+              "        background-color: #434B5C;\n",
+              "        box-shadow: 0px 1px 3px 1px rgba(0, 0, 0, 0.15);\n",
+              "        filter: drop-shadow(0px 1px 2px rgba(0, 0, 0, 0.3));\n",
+              "        fill: #FFFFFF;\n",
+              "      }\n",
+              "    </style>\n",
+              "    <button class=\"colab-df-generate\" onclick=\"generateWithVariable('info_df')\"\n",
+              "            title=\"Generate code using this dataframe.\"\n",
+              "            style=\"display:none;\">\n",
+              "\n",
+              "  <svg xmlns=\"http://www.w3.org/2000/svg\" height=\"24px\"viewBox=\"0 0 24 24\"\n",
+              "       width=\"24px\">\n",
+              "    <path d=\"M7,19H8.4L18.45,9,17,7.55,7,17.6ZM5,21V16.75L18.45,3.32a2,2,0,0,1,2.83,0l1.4,1.43a1.91,1.91,0,0,1,.58,1.4,1.91,1.91,0,0,1-.58,1.4L9.25,21ZM18.45,9,17,7.55Zm-12,3A5.31,5.31,0,0,0,4.9,8.1,5.31,5.31,0,0,0,1,6.5,5.31,5.31,0,0,0,4.9,4.9,5.31,5.31,0,0,0,6.5,1,5.31,5.31,0,0,0,8.1,4.9,5.31,5.31,0,0,0,12,6.5,5.46,5.46,0,0,0,6.5,12Z\"/>\n",
+              "  </svg>\n",
+              "    </button>\n",
+              "    <script>\n",
+              "      (() => {\n",
+              "      const buttonEl =\n",
+              "        document.querySelector('#id_7bfd2bb9-90b3-43e6-8502-d566eaee1a53 button.colab-df-generate');\n",
+              "      buttonEl.style.display =\n",
+              "        google.colab.kernel.accessAllowed ? 'block' : 'none';\n",
+              "\n",
+              "      buttonEl.onclick = () => {\n",
+              "        google.colab.notebook.generateWithVariable('info_df');\n",
+              "      }\n",
+              "      })();\n",
+              "    </script>\n",
+              "  </div>\n",
+              "\n",
+              "    </div>\n",
+              "  </div>\n"
+            ],
+            "application/vnd.google.colaboratory.intrinsic+json": {
+              "type": "dataframe",
+              "variable_name": "info_df",
+              "summary": "{\n  \"name\": \"info_df\",\n  \"rows\": 6,\n  \"fields\": [\n    {\n      \"column\": \"count(*)\",\n      \"properties\": {\n        \"dtype\": \"number\",\n        \"std\": 1601,\n        \"min\": 90,\n        \"max\": 4532,\n        \"num_unique_values\": 6,\n        \"samples\": [\n          90,\n          2862,\n          4532\n        ],\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    },\n    {\n      \"column\": \"bug_type\",\n      \"properties\": {\n        \"dtype\": \"string\",\n        \"num_unique_values\": 6,\n        \"samples\": [\n          \"mobile\",\n          \"general\",\n          \"functionality\"\n        ],\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    }\n  ]\n}"
+            }
+          },
+          "metadata": {},
+          "execution_count": 4
+        }
+      ],
+      "source": [
+        "with open('bug-type-dist-query_train.sql', 'r') as f:\n",
+        "    query = f.read()\n",
+        "\n",
+        "info_df = pd.read_sql_query(query, con)\n",
+        "info_df"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "87tUL_bQHti7"
+      },
+      "source": [
+        "# Create Classification Labels\n",
+        "\n",
+        "```json\n",
+        "{\n",
+        "    \"mobile\" : 0,\n",
+        "    \"functionality\" : 0,\n",
+        "    \"ui-ux\" : 0,\n",
+        "    \"compatibility-performance\" : 0,\n",
+        "    \"network-security\" : 0,\n",
+        "    \"general\": 0\n",
+        "}\n",
+        "\n",
+        "Ένα δείγμα που κατηγοριοποιήθηκε ως σφάλμα λειτουργικότητας(functionality) και ui-ux θα έχει διάνυσμα ταξινόμησης ->\n",
+        "[0,1,1,0,0,0]\n",
+        "```\n"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 5,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/",
+          "height": 573
+        },
+        "id": "6mRHGm6JHti8",
+        "outputId": "d8175898-78ab-4a93-878f-942a50349390"
+      },
+      "outputs": [
+        {
+          "output_type": "execute_result",
+          "data": {
+            "text/plain": [
+              "   index                                    commit  \\\n",
+              "0  14193  225ae89c984227f9c2cfbe0278618758256e577f   \n",
+              "1  17090  e9286911fcaa253b094eea4b532f07c31e9f3ee5   \n",
+              "2   3401  8b512427144c1a8ff55c149267708fd783754405   \n",
+              "3  33381  1ea806751405a7bfd7bf388eeabce2de0ad5c50f   \n",
+              "4  33412  5551c176fc2c5fa59de1fbd29f36a4b2538ae85e   \n",
+              "\n",
+              "                                            old_file  \\\n",
+              "0                                          server.js   \n",
+              "1  packages/plugins/sentry/server/middlewares/sen...   \n",
+              "2  app/components/wallet/backup-recovery/WalletRe...   \n",
+              "3                                 templates:array.js   \n",
+              "4                               bin/mai-chai-init.js   \n",
+              "\n",
+              "                                            new_file  \\\n",
+              "0                                          server.js   \n",
+              "1  packages/plugins/sentry/server/middlewares/sen...   \n",
+              "2  app/components/wallet/backup-recovery/WalletRe...   \n",
+              "3                                 templates:array.js   \n",
+              "4                               bin/mai-chai-init.js   \n",
+              "\n",
+              "                                        old_contents  \\\n",
+              "0  \\n/**\\n * @description  a string as a paramete...   \n",
+              "1  'use strict';\\n\\n/**\\n * Programmatic sentry m...   \n",
+              "2  // @flow\\nimport React, { Component, PropTypes...   \n",
+              "3  ReactiveArray;\\n\\nthis.ReactiveArray = Reactiv...   \n",
+              "4  'use strict';\\n/* global require */\\n/* global...   \n",
+              "\n",
+              "                                        new_contents  \\\n",
+              "0  var express = require('express')\\nvar strftime...   \n",
+              "1  'use strict';\\n\\n/**\\n * Programmatic sentry m...   \n",
+              "2  // @flow\\nimport React, { Component, PropTypes...   \n",
+              "3  ReactiveArray;\\n\\nthis.ReactiveArray = Reactiv...   \n",
+              "4  'use strict';\\n/* global require */\\n/* global...   \n",
+              "\n",
+              "                                             subject  \\\n",
+              "0  Add example code to test Heroku error app not ...   \n",
+              "1              Fix calling sendError on wrong object   \n",
+              "2  Fix proptype checking in wallet recovery instr...   \n",
+              "3           Fix set function with underscore isEqual   \n",
+              "4                       Fix regex for win32 platform   \n",
+              "\n",
+              "                                             message        lang     license  \\\n",
+              "0  Add example code to test Heroku error app not ...  JavaScript         mit   \n",
+              "1  Fix calling sendError on wrong object\\n\\nFixes...  JavaScript         mit   \n",
+              "2  Fix proptype checking in wallet recovery instr...  JavaScript  apache-2.0   \n",
+              "3           Fix set function with underscore isEqual  JavaScript         mit   \n",
+              "4                     Fix regex for win32 platform\\n  JavaScript         mit   \n",
+              "\n",
+              "                                               repos  \\\n",
+              "0  kiwi-lifter/timestamp-api,kiwi-lifter/timestam...   \n",
+              "1                  wistityhq/strapi,wistityhq/strapi   \n",
+              "2  input-output-hk/daedalus,input-output-hk/daeda...   \n",
+              "3                              meteortemplates/array   \n",
+              "4                                epsitec-sa/mai-chai   \n",
+              "\n",
+              "                                   processed_message  is_bug  \\\n",
+              "0         add exampl code test heroku error app load       1   \n",
+              "1  fix call senderror wrong object fix sentri plu...       1   \n",
+              "2  fix proptyp check wallet recoveri instruct compon       1   \n",
+              "3                   fix set function underscor isequ       1   \n",
+              "4                           fix regex win32 platform       1   \n",
+              "\n",
+              "                                         bug_type               class_labels  \n",
+              "0         functionality,compatibility-performance  [1.0, 0.0, 1.0, 0.0, 0.0]  \n",
+              "1  mobile,functionality,compatibility-performance  [1.0, 0.0, 1.0, 0.0, 0.0]  \n",
+              "2                                   functionality  [1.0, 0.0, 0.0, 0.0, 0.0]  \n",
+              "3                                   functionality  [1.0, 0.0, 0.0, 0.0, 0.0]  \n",
+              "4                 ui-ux,compatibility-performance  [0.0, 1.0, 1.0, 0.0, 0.0]  "
+            ],
+            "text/html": [
+              "\n",
+              "  <div id=\"df-fd3408da-1bf4-48e1-9c67-44e480b4e5ac\" class=\"colab-df-container\">\n",
+              "    <div>\n",
+              "<style scoped>\n",
+              "    .dataframe tbody tr th:only-of-type {\n",
+              "        vertical-align: middle;\n",
+              "    }\n",
+              "\n",
+              "    .dataframe tbody tr th {\n",
+              "        vertical-align: top;\n",
+              "    }\n",
+              "\n",
+              "    .dataframe thead th {\n",
+              "        text-align: right;\n",
+              "    }\n",
+              "</style>\n",
+              "<table border=\"1\" class=\"dataframe\">\n",
+              "  <thead>\n",
+              "    <tr style=\"text-align: right;\">\n",
+              "      <th></th>\n",
+              "      <th>index</th>\n",
+              "      <th>commit</th>\n",
+              "      <th>old_file</th>\n",
+              "      <th>new_file</th>\n",
+              "      <th>old_contents</th>\n",
+              "      <th>new_contents</th>\n",
+              "      <th>subject</th>\n",
+              "      <th>message</th>\n",
+              "      <th>lang</th>\n",
+              "      <th>license</th>\n",
+              "      <th>repos</th>\n",
+              "      <th>processed_message</th>\n",
+              "      <th>is_bug</th>\n",
+              "      <th>bug_type</th>\n",
+              "      <th>class_labels</th>\n",
+              "    </tr>\n",
+              "  </thead>\n",
+              "  <tbody>\n",
+              "    <tr>\n",
+              "      <th>0</th>\n",
+              "      <td>14193</td>\n",
+              "      <td>225ae89c984227f9c2cfbe0278618758256e577f</td>\n",
+              "      <td>server.js</td>\n",
+              "      <td>server.js</td>\n",
+              "      <td>\\n/**\\n * @description  a string as a paramete...</td>\n",
+              "      <td>var express = require('express')\\nvar strftime...</td>\n",
+              "      <td>Add example code to test Heroku error app not ...</td>\n",
+              "      <td>Add example code to test Heroku error app not ...</td>\n",
+              "      <td>JavaScript</td>\n",
+              "      <td>mit</td>\n",
+              "      <td>kiwi-lifter/timestamp-api,kiwi-lifter/timestam...</td>\n",
+              "      <td>add exampl code test heroku error app load</td>\n",
+              "      <td>1</td>\n",
+              "      <td>functionality,compatibility-performance</td>\n",
+              "      <td>[1.0, 0.0, 1.0, 0.0, 0.0]</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <th>1</th>\n",
+              "      <td>17090</td>\n",
+              "      <td>e9286911fcaa253b094eea4b532f07c31e9f3ee5</td>\n",
+              "      <td>packages/plugins/sentry/server/middlewares/sen...</td>\n",
+              "      <td>packages/plugins/sentry/server/middlewares/sen...</td>\n",
+              "      <td>'use strict';\\n\\n/**\\n * Programmatic sentry m...</td>\n",
+              "      <td>'use strict';\\n\\n/**\\n * Programmatic sentry m...</td>\n",
+              "      <td>Fix calling sendError on wrong object</td>\n",
+              "      <td>Fix calling sendError on wrong object\\n\\nFixes...</td>\n",
+              "      <td>JavaScript</td>\n",
+              "      <td>mit</td>\n",
+              "      <td>wistityhq/strapi,wistityhq/strapi</td>\n",
+              "      <td>fix call senderror wrong object fix sentri plu...</td>\n",
+              "      <td>1</td>\n",
+              "      <td>mobile,functionality,compatibility-performance</td>\n",
+              "      <td>[1.0, 0.0, 1.0, 0.0, 0.0]</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <th>2</th>\n",
+              "      <td>3401</td>\n",
+              "      <td>8b512427144c1a8ff55c149267708fd783754405</td>\n",
+              "      <td>app/components/wallet/backup-recovery/WalletRe...</td>\n",
+              "      <td>app/components/wallet/backup-recovery/WalletRe...</td>\n",
+              "      <td>// @flow\\nimport React, { Component, PropTypes...</td>\n",
+              "      <td>// @flow\\nimport React, { Component, PropTypes...</td>\n",
+              "      <td>Fix proptype checking in wallet recovery instr...</td>\n",
+              "      <td>Fix proptype checking in wallet recovery instr...</td>\n",
+              "      <td>JavaScript</td>\n",
+              "      <td>apache-2.0</td>\n",
+              "      <td>input-output-hk/daedalus,input-output-hk/daeda...</td>\n",
+              "      <td>fix proptyp check wallet recoveri instruct compon</td>\n",
+              "      <td>1</td>\n",
+              "      <td>functionality</td>\n",
+              "      <td>[1.0, 0.0, 0.0, 0.0, 0.0]</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <th>3</th>\n",
+              "      <td>33381</td>\n",
+              "      <td>1ea806751405a7bfd7bf388eeabce2de0ad5c50f</td>\n",
+              "      <td>templates:array.js</td>\n",
+              "      <td>templates:array.js</td>\n",
+              "      <td>ReactiveArray;\\n\\nthis.ReactiveArray = Reactiv...</td>\n",
+              "      <td>ReactiveArray;\\n\\nthis.ReactiveArray = Reactiv...</td>\n",
+              "      <td>Fix set function with underscore isEqual</td>\n",
+              "      <td>Fix set function with underscore isEqual</td>\n",
+              "      <td>JavaScript</td>\n",
+              "      <td>mit</td>\n",
+              "      <td>meteortemplates/array</td>\n",
+              "      <td>fix set function underscor isequ</td>\n",
+              "      <td>1</td>\n",
+              "      <td>functionality</td>\n",
+              "      <td>[1.0, 0.0, 0.0, 0.0, 0.0]</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <th>4</th>\n",
+              "      <td>33412</td>\n",
+              "      <td>5551c176fc2c5fa59de1fbd29f36a4b2538ae85e</td>\n",
+              "      <td>bin/mai-chai-init.js</td>\n",
+              "      <td>bin/mai-chai-init.js</td>\n",
+              "      <td>'use strict';\\n/* global require */\\n/* global...</td>\n",
+              "      <td>'use strict';\\n/* global require */\\n/* global...</td>\n",
+              "      <td>Fix regex for win32 platform</td>\n",
+              "      <td>Fix regex for win32 platform\\n</td>\n",
+              "      <td>JavaScript</td>\n",
+              "      <td>mit</td>\n",
+              "      <td>epsitec-sa/mai-chai</td>\n",
+              "      <td>fix regex win32 platform</td>\n",
+              "      <td>1</td>\n",
+              "      <td>ui-ux,compatibility-performance</td>\n",
+              "      <td>[0.0, 1.0, 1.0, 0.0, 0.0]</td>\n",
+              "    </tr>\n",
+              "  </tbody>\n",
+              "</table>\n",
+              "</div>\n",
+              "    <div class=\"colab-df-buttons\">\n",
+              "\n",
+              "  <div class=\"colab-df-container\">\n",
+              "    <button class=\"colab-df-convert\" onclick=\"convertToInteractive('df-fd3408da-1bf4-48e1-9c67-44e480b4e5ac')\"\n",
+              "            title=\"Convert this dataframe to an interactive table.\"\n",
+              "            style=\"display:none;\">\n",
+              "\n",
+              "  <svg xmlns=\"http://www.w3.org/2000/svg\" height=\"24px\" viewBox=\"0 -960 960 960\">\n",
+              "    <path d=\"M120-120v-720h720v720H120Zm60-500h600v-160H180v160Zm220 220h160v-160H400v160Zm0 220h160v-160H400v160ZM180-400h160v-160H180v160Zm440 0h160v-160H620v160ZM180-180h160v-160H180v160Zm440 0h160v-160H620v160Z\"/>\n",
+              "  </svg>\n",
+              "    </button>\n",
+              "\n",
+              "  <style>\n",
+              "    .colab-df-container {\n",
+              "      display:flex;\n",
+              "      gap: 12px;\n",
+              "    }\n",
+              "\n",
+              "    .colab-df-convert {\n",
+              "      background-color: #E8F0FE;\n",
+              "      border: none;\n",
+              "      border-radius: 50%;\n",
+              "      cursor: pointer;\n",
+              "      display: none;\n",
+              "      fill: #1967D2;\n",
+              "      height: 32px;\n",
+              "      padding: 0 0 0 0;\n",
+              "      width: 32px;\n",
+              "    }\n",
+              "\n",
+              "    .colab-df-convert:hover {\n",
+              "      background-color: #E2EBFA;\n",
+              "      box-shadow: 0px 1px 2px rgba(60, 64, 67, 0.3), 0px 1px 3px 1px rgba(60, 64, 67, 0.15);\n",
+              "      fill: #174EA6;\n",
+              "    }\n",
+              "\n",
+              "    .colab-df-buttons div {\n",
+              "      margin-bottom: 4px;\n",
+              "    }\n",
+              "\n",
+              "    [theme=dark] .colab-df-convert {\n",
+              "      background-color: #3B4455;\n",
+              "      fill: #D2E3FC;\n",
+              "    }\n",
+              "\n",
+              "    [theme=dark] .colab-df-convert:hover {\n",
+              "      background-color: #434B5C;\n",
+              "      box-shadow: 0px 1px 3px 1px rgba(0, 0, 0, 0.15);\n",
+              "      filter: drop-shadow(0px 1px 2px rgba(0, 0, 0, 0.3));\n",
+              "      fill: #FFFFFF;\n",
+              "    }\n",
+              "  </style>\n",
+              "\n",
+              "    <script>\n",
+              "      const buttonEl =\n",
+              "        document.querySelector('#df-fd3408da-1bf4-48e1-9c67-44e480b4e5ac button.colab-df-convert');\n",
+              "      buttonEl.style.display =\n",
+              "        google.colab.kernel.accessAllowed ? 'block' : 'none';\n",
+              "\n",
+              "      async function convertToInteractive(key) {\n",
+              "        const element = document.querySelector('#df-fd3408da-1bf4-48e1-9c67-44e480b4e5ac');\n",
+              "        const dataTable =\n",
+              "          await google.colab.kernel.invokeFunction('convertToInteractive',\n",
+              "                                                    [key], {});\n",
+              "        if (!dataTable) return;\n",
+              "\n",
+              "        const docLinkHtml = 'Like what you see? Visit the ' +\n",
+              "          '<a target=\"_blank\" href=https://colab.research.google.com/notebooks/data_table.ipynb>data table notebook</a>'\n",
+              "          + ' to learn more about interactive tables.';\n",
+              "        element.innerHTML = '';\n",
+              "        dataTable['output_type'] = 'display_data';\n",
+              "        await google.colab.output.renderOutput(dataTable, element);\n",
+              "        const docLink = document.createElement('div');\n",
+              "        docLink.innerHTML = docLinkHtml;\n",
+              "        element.appendChild(docLink);\n",
+              "      }\n",
+              "    </script>\n",
+              "  </div>\n",
+              "\n",
+              "\n",
+              "<div id=\"df-87947f82-ee2c-4139-8b76-0b2f526de3af\">\n",
+              "  <button class=\"colab-df-quickchart\" onclick=\"quickchart('df-87947f82-ee2c-4139-8b76-0b2f526de3af')\"\n",
+              "            title=\"Suggest charts\"\n",
+              "            style=\"display:none;\">\n",
+              "\n",
+              "<svg xmlns=\"http://www.w3.org/2000/svg\" height=\"24px\"viewBox=\"0 0 24 24\"\n",
+              "     width=\"24px\">\n",
+              "    <g>\n",
+              "        <path d=\"M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z\"/>\n",
+              "    </g>\n",
+              "</svg>\n",
+              "  </button>\n",
+              "\n",
+              "<style>\n",
+              "  .colab-df-quickchart {\n",
+              "      --bg-color: #E8F0FE;\n",
+              "      --fill-color: #1967D2;\n",
+              "      --hover-bg-color: #E2EBFA;\n",
+              "      --hover-fill-color: #174EA6;\n",
+              "      --disabled-fill-color: #AAA;\n",
+              "      --disabled-bg-color: #DDD;\n",
+              "  }\n",
+              "\n",
+              "  [theme=dark] .colab-df-quickchart {\n",
+              "      --bg-color: #3B4455;\n",
+              "      --fill-color: #D2E3FC;\n",
+              "      --hover-bg-color: #434B5C;\n",
+              "      --hover-fill-color: #FFFFFF;\n",
+              "      --disabled-bg-color: #3B4455;\n",
+              "      --disabled-fill-color: #666;\n",
+              "  }\n",
+              "\n",
+              "  .colab-df-quickchart {\n",
+              "    background-color: var(--bg-color);\n",
+              "    border: none;\n",
+              "    border-radius: 50%;\n",
+              "    cursor: pointer;\n",
+              "    display: none;\n",
+              "    fill: var(--fill-color);\n",
+              "    height: 32px;\n",
+              "    padding: 0;\n",
+              "    width: 32px;\n",
+              "  }\n",
+              "\n",
+              "  .colab-df-quickchart:hover {\n",
+              "    background-color: var(--hover-bg-color);\n",
+              "    box-shadow: 0 1px 2px rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15);\n",
+              "    fill: var(--button-hover-fill-color);\n",
+              "  }\n",
+              "\n",
+              "  .colab-df-quickchart-complete:disabled,\n",
+              "  .colab-df-quickchart-complete:disabled:hover {\n",
+              "    background-color: var(--disabled-bg-color);\n",
+              "    fill: var(--disabled-fill-color);\n",
+              "    box-shadow: none;\n",
+              "  }\n",
+              "\n",
+              "  .colab-df-spinner {\n",
+              "    border: 2px solid var(--fill-color);\n",
+              "    border-color: transparent;\n",
+              "    border-bottom-color: var(--fill-color);\n",
+              "    animation:\n",
+              "      spin 1s steps(1) infinite;\n",
+              "  }\n",
+              "\n",
+              "  @keyframes spin {\n",
+              "    0% {\n",
+              "      border-color: transparent;\n",
+              "      border-bottom-color: var(--fill-color);\n",
+              "      border-left-color: var(--fill-color);\n",
+              "    }\n",
+              "    20% {\n",
+              "      border-color: transparent;\n",
+              "      border-left-color: var(--fill-color);\n",
+              "      border-top-color: var(--fill-color);\n",
+              "    }\n",
+              "    30% {\n",
+              "      border-color: transparent;\n",
+              "      border-left-color: var(--fill-color);\n",
+              "      border-top-color: var(--fill-color);\n",
+              "      border-right-color: var(--fill-color);\n",
+              "    }\n",
+              "    40% {\n",
+              "      border-color: transparent;\n",
+              "      border-right-color: var(--fill-color);\n",
+              "      border-top-color: var(--fill-color);\n",
+              "    }\n",
+              "    60% {\n",
+              "      border-color: transparent;\n",
+              "      border-right-color: var(--fill-color);\n",
+              "    }\n",
+              "    80% {\n",
+              "      border-color: transparent;\n",
+              "      border-right-color: var(--fill-color);\n",
+              "      border-bottom-color: var(--fill-color);\n",
+              "    }\n",
+              "    90% {\n",
+              "      border-color: transparent;\n",
+              "      border-bottom-color: var(--fill-color);\n",
+              "    }\n",
+              "  }\n",
+              "</style>\n",
+              "\n",
+              "  <script>\n",
+              "    async function quickchart(key) {\n",
+              "      const quickchartButtonEl =\n",
+              "        document.querySelector('#' + key + ' button');\n",
+              "      quickchartButtonEl.disabled = true;  // To prevent multiple clicks.\n",
+              "      quickchartButtonEl.classList.add('colab-df-spinner');\n",
+              "      try {\n",
+              "        const charts = await google.colab.kernel.invokeFunction(\n",
+              "            'suggestCharts', [key], {});\n",
+              "      } catch (error) {\n",
+              "        console.error('Error during call to suggestCharts:', error);\n",
+              "      }\n",
+              "      quickchartButtonEl.classList.remove('colab-df-spinner');\n",
+              "      quickchartButtonEl.classList.add('colab-df-quickchart-complete');\n",
+              "    }\n",
+              "    (() => {\n",
+              "      let quickchartButtonEl =\n",
+              "        document.querySelector('#df-87947f82-ee2c-4139-8b76-0b2f526de3af button');\n",
+              "      quickchartButtonEl.style.display =\n",
+              "        google.colab.kernel.accessAllowed ? 'block' : 'none';\n",
+              "    })();\n",
+              "  </script>\n",
+              "</div>\n",
+              "\n",
+              "    </div>\n",
+              "  </div>\n"
+            ],
+            "application/vnd.google.colaboratory.intrinsic+json": {
+              "type": "dataframe",
+              "variable_name": "ds_df",
+              "summary": "{\n  \"name\": \"ds_df\",\n  \"rows\": 10,\n  \"fields\": [\n    {\n      \"column\": \"index\",\n      \"properties\": {\n        \"dtype\": \"number\",\n        \"std\": 14334,\n        \"min\": 3401,\n        \"max\": 51075,\n        \"num_unique_values\": 10,\n        \"samples\": [\n          39641,\n          17090,\n          12573\n        ],\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    },\n    {\n      \"column\": \"commit\",\n      \"properties\": {\n        \"dtype\": \"string\",\n        \"num_unique_values\": 10,\n        \"samples\": [\n          \"e524763effb091e8b1bd48b1ac890bf7da1578ca\",\n          \"e9286911fcaa253b094eea4b532f07c31e9f3ee5\",\n          \"1c559c078519a305d7723da0adf0d64f074f2982\"\n        ],\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    },\n    {\n      \"column\": \"old_file\",\n      \"properties\": {\n        \"dtype\": \"string\",\n        \"num_unique_values\": 10,\n        \"samples\": [\n          \"resources/assets/js/app.js\",\n          \"packages/plugins/sentry/server/middlewares/sentry.js\",\n          \"src/js/config.js\"\n        ],\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    },\n    {\n      \"column\": \"new_file\",\n      \"properties\": {\n        \"dtype\": \"string\",\n        \"num_unique_values\": 10,\n        \"samples\": [\n          \"resources/assets/js/app.js\",\n          \"packages/plugins/sentry/server/middlewares/sentry.js\",\n          \"src/js/config.js\"\n        ],\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    },\n    {\n      \"column\": \"old_contents\",\n      \"properties\": {\n        \"dtype\": \"string\",\n        \"num_unique_values\": 10,\n        \"samples\": [\n          \"/**\\n * First we will load all of this project's JavaScript dependencies which\\n * includes Vue and other libraries. It is a great starting point when\\n * building robust, powerful web applications using Vue and Laravel.\\n */\\n\\nrequire('./bootstrap')\\nvar marked = require('marked')\\n\\n/**\\n * Next, we will create a fresh Vue application instance and attach it to\\n * the page. Then, you may begin adding components to this application\\n * or customize the JavaScript scaffolding to fit your unique needs.\\n */\\n\\nVue.component('flash', require('./components/Flash.vue'))\\nVue.component('avatar', require('./components/Avatar.vue'))\\nVue.component('favorite', require('./components/Favorite.vue'))\\nVue.component('discussion-view', require('./pages/Discussion.vue'))\\n\\nVue.mixin({\\n\\tmethods: {\\n\\t\\tmarked: function (input) {\\n\\t\\t\\treturn marked(input)\\n\\t\\t}\\n\\t}\\n})\\n\\nconst app = new Vue({\\n\\tel: '#app'\\n})\\n\",\n          \"'use strict';\\n\\n/**\\n * Programmatic sentry middleware. We do not want to expose it in the plugin\\n * @param {{ strapi: import('@strapi/strapi').Strapi }}\\n */\\nmodule.exports = ({ strapi }) => {\\n  const sentryService = strapi.plugin('sentry').service('sentry');\\n  sentryService.init();\\n  const sentry = sentryService.getInstance();\\n\\n  if (!sentry) {\\n    // initialization failed\\n    return;\\n  }\\n\\n  strapi.server.use(async (ctx, next) => {\\n    try {\\n      await next();\\n    } catch (error) {\\n      sentry.sendError(error, (scope, sentryInstance) => {\\n        scope.addEventProcessor(event => {\\n          // Parse Koa context to add error metadata\\n          return sentryInstance.Handlers.parseRequest(event, ctx.request, {\\n            // Don't parse the transaction name, we'll do it manually\\n            transaction: false,\\n          });\\n        });\\n\\n        // Manually add transaction name\\n        scope.setTag('transaction', `${ctx.method} ${ctx.request.url}`);\\n        // Manually add Strapi version\\n        scope.setTag('strapi_version', strapi.config.info.strapi);\\n        scope.setTag('method', ctx.method);\\n      });\\n\\n      throw error;\\n    }\\n  });\\n};\\n\",\n          \"// Parameters for the application\\n\\nexport default {\\n  queryURL: 'https://unece-stardog.ichec.ie/annex/classifications/sparql/query'\\n}\"\n        ],\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    },\n    {\n      \"column\": \"new_contents\",\n      \"properties\": {\n        \"dtype\": \"string\",\n        \"num_unique_values\": 10,\n        \"samples\": [\n          \"/**\\n * First we will load all of this project's JavaScript dependencies which\\n * includes Vue and other libraries. It is a great starting point when\\n * building robust, powerful web applications using Vue and Laravel.\\n */\\n\\nrequire('./bootstrap')\\nvar marked = require('marked')\\n\\n/**\\n * Next, we will create a fresh Vue application instance and attach it to\\n * the page. Then, you may begin adding components to this application\\n * or customize the JavaScript scaffolding to fit your unique needs.\\n */\\n\\nVue.component('flash', require('./components/Flash.vue'))\\nVue.component('avatar', require('./components/Avatar.vue'))\\nVue.component('favorite', require('./components/Favorite.vue'))\\nVue.component('discussion-view', require('./pages/Discussion.vue'))\\n\\nVue.mixin({\\n\\tmethods: {\\n\\t\\tmarked: function (input) {\\n\\t\\t\\treturn marked(input)\\n\\t\\t}\\n\\t}\\n})\\n\",\n          \"'use strict';\\n\\n/**\\n * Programmatic sentry middleware. We do not want to expose it in the plugin\\n * @param {{ strapi: import('@strapi/strapi').Strapi }}\\n */\\nmodule.exports = ({ strapi }) => {\\n  const sentryService = strapi.plugin('sentry').service('sentry');\\n  sentryService.init();\\n  const sentry = sentryService.getInstance();\\n\\n  if (!sentry) {\\n    // initialization failed\\n    return;\\n  }\\n\\n  strapi.server.use(async (ctx, next) => {\\n    try {\\n      await next();\\n    } catch (error) {\\n      sentryService.sendError(error, (scope, sentryInstance) => {\\n        scope.addEventProcessor(event => {\\n          // Parse Koa context to add error metadata\\n          return sentryInstance.Handlers.parseRequest(event, ctx.request, {\\n            // Don't parse the transaction name, we'll do it manually\\n            transaction: false,\\n          });\\n        });\\n\\n        // Manually add transaction name\\n        scope.setTag('transaction', `${ctx.method} ${ctx.request.url}`);\\n        // Manually add Strapi version\\n        scope.setTag('strapi_version', strapi.config.info.strapi);\\n        scope.setTag('method', ctx.method);\\n      });\\n\\n      throw error;\\n    }\\n  });\\n};\\n\",\n          \"// Parameters for the application\\n\\nexport default {\\n  queryURL: 'https://unece-stardog.ichec.ie/annex/models/sparql/query'\\n}\"\n        ],\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    },\n    {\n      \"column\": \"subject\",\n      \"properties\": {\n        \"dtype\": \"string\",\n        \"num_unique_values\": 10,\n        \"samples\": [\n          \"Fix issue with Vue not working\",\n          \"Fix calling sendError on wrong object\",\n          \"Fix wrong URL for remote calls\"\n        ],\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    },\n    {\n      \"column\": \"message\",\n      \"properties\": {\n        \"dtype\": \"string\",\n        \"num_unique_values\": 10,\n        \"samples\": [\n          \"Fix issue with Vue not working\\n\",\n          \"Fix calling sendError on wrong object\\n\\nFixes the sentry plugin middleware calling the `sendError` function on the wrong object (sentry SDK instead of the sentry service)\",\n          \"Fix wrong URL for remote calls\\n\\n\"\n        ],\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    },\n    {\n      \"column\": \"lang\",\n      \"properties\": {\n        \"dtype\": \"category\",\n        \"num_unique_values\": 1,\n        \"samples\": [\n          \"JavaScript\"\n        ],\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    },\n    {\n      \"column\": \"license\",\n      \"properties\": {\n        \"dtype\": \"category\",\n        \"num_unique_values\": 2,\n        \"samples\": [\n          \"apache-2.0\"\n        ],\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    },\n    {\n      \"column\": \"repos\",\n      \"properties\": {\n        \"dtype\": \"string\",\n        \"num_unique_values\": 10,\n        \"samples\": [\n          \"anodyne/aurora,anodyne/aurora,anodyne/aurora\"\n        ],\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    },\n    {\n      \"column\": \"processed_message\",\n      \"properties\": {\n        \"dtype\": \"string\",\n        \"num_unique_values\": 10,\n        \"samples\": [\n          \"fix issu vue work\"\n        ],\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    },\n    {\n      \"column\": \"is_bug\",\n      \"properties\": {\n        \"dtype\": \"number\",\n        \"std\": 0,\n        \"min\": 1,\n        \"max\": 1,\n        \"num_unique_values\": 1,\n        \"samples\": [\n          1\n        ],\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    },\n    {\n      \"column\": \"bug_type\",\n      \"properties\": {\n        \"dtype\": \"string\",\n        \"num_unique_values\": 7,\n        \"samples\": [\n          \"functionality,compatibility-performance\"\n        ],\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    },\n    {\n      \"column\": \"class_labels\",\n      \"properties\": {\n        \"dtype\": \"object\",\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    }\n  ]\n}"
+            }
+          },
+          "metadata": {},
+          "execution_count": 5
+        }
+      ],
+      "source": [
+        "def load_ds() -> pd.DataFrame:\n",
+        "    query = f\"select * from {DB_TABLE}\"\n",
+        "    ds_df = pd.read_sql_query(query, con)\n",
+        "    return ds_df\n",
+        "\n",
+        "ds_df = load_ds()\n",
+        "\n",
+        "ds_df['class_labels'] = ds_df['bug_type'].apply(lambda bT: add_labels(bT.split(','), classLabels))\n",
+        "if DEBUG:\n",
+        "    ds_df = ds_df.iloc[:10]\n",
+        "\n",
+        "if not WITH_MOBILE:\n",
+        "    ds_df = ds_df[ds_df['bug_type'] != 'mobile']\n",
+        "\n",
+        "ds_df.head()"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 6,
+      "metadata": {
+        "id": "yfz1v1lTjOJz",
+        "outputId": "87cf57ce-526b-4a8e-8534-838d9921dac4",
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        }
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Total training samples: 10\n"
+          ]
+        }
+      ],
+      "source": [
+        "old_codes = ds_df[['old_contents', 'class_labels']]\n",
+        "new_codes = ds_df[['new_contents', 'class_labels']]\n",
+        "\n",
+        "TRAIN_old, VAL_old, TRAIN_new, VAL_new = train_test_split(old_codes, new_codes, test_size=VAL_SIZE, random_state=42)\n",
+        "\n",
+        "print(f\"Total training samples: {len(ds_df)}\")"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "Qzy9IQ79Hti8"
+      },
+      "source": [
+        "## Dataset"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 7,
+      "metadata": {
+        "id": "9Wwhjv1FHti8"
+      },
+      "outputs": [],
+      "source": [
+        "tokenizer = RobertaTokenizer.from_pretrained(HF_DIR)\n",
+        "\n",
+        "TRAIN_encodings = tokenizer(\n",
+        "    TRAIN_old['old_contents'].tolist(),\n",
+        "    max_length=TOKENIZER_MAX_LENGTH,\n",
+        "    pad_to_max_length=True,\n",
+        "    return_tensors='pt',\n",
+        "    padding='max_length',\n",
+        "    truncation=True\n",
+        ")\n",
+        "\n",
+        "VAL_encodings = tokenizer(\n",
+        "    VAL_old['old_contents'].tolist(),\n",
+        "    max_length=TOKENIZER_MAX_LENGTH,\n",
+        "    pad_to_max_length=True,\n",
+        "    return_tensors='pt',\n",
+        "    padding='max_length',\n",
+        "    truncation=True\n",
+        ")\n",
+        "\n",
+        "TRAIN_decodings = tokenizer(\n",
+        "    TRAIN_new['new_contents'].tolist(),\n",
+        "    max_length=TOKENIZER_MAX_LENGTH,\n",
+        "    pad_to_max_length=True,\n",
+        "    return_tensors='pt',\n",
+        "    padding='max_length',\n",
+        "    truncation=True\n",
+        ")\n",
+        "\n",
+        "VAL_decodings = tokenizer(\n",
+        "    VAL_new['new_contents'].tolist(),\n",
+        "    max_length=TOKENIZER_MAX_LENGTH,\n",
+        "    pad_to_max_length=True,\n",
+        "    return_tensors='pt',\n",
+        "    padding='max_length',\n",
+        "    truncation=True\n",
+        ")"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "jnVOxTTIHti9"
+      },
+      "source": [
+        "## Convert Class Labels into tensors"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 8,
+      "metadata": {
+        "id": "hRoNjm0bHti9",
+        "outputId": "4fbc3f27-a441-488f-ad22-afcb5d2b21f2",
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        }
+      },
+      "outputs": [
+        {
+          "output_type": "execute_result",
+          "data": {
+            "text/plain": [
+              "tensor([[1., 0., 1., 0., 0.],\n",
+              "        [0., 0., 0., 0., 1.],\n",
+              "        [1., 0., 0., 0., 0.],\n",
+              "        [0., 0., 0., 0., 1.],\n",
+              "        [0., 1., 1., 0., 0.],\n",
+              "        [1., 0., 0., 0., 0.],\n",
+              "        [0., 0., 0., 0., 1.]])"
+            ]
+          },
+          "metadata": {},
+          "execution_count": 8
+        }
+      ],
+      "source": [
+        "TRAIN_classes = torch.tensor(TRAIN_old['class_labels'].tolist())\n",
+        "VAL_classes = torch.tensor(VAL_old['class_labels'].tolist())\n",
+        "TRAIN_classes"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "KX0ep0C-jOJ0"
+      },
+      "source": [
+        "### Compute class weights\n",
+        "$pos\\ weight[i] = (Number\\ of\\ negative\\ samples\\ for\\ class\\ i) / (Number\\ of\\ positive\\ samples\\ for\\ class\\ i)$"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 9,
+      "metadata": {
+        "id": "P_PSoINcjOJ0"
+      },
+      "outputs": [],
+      "source": [
+        "num_samples = TRAIN_classes.size(0)\n",
+        "num_classes = TRAIN_classes.size(1)\n",
+        "\n",
+        "pos_counts = torch.sum(TRAIN_classes, dim=0)\n",
+        "neg_counts = num_samples - pos_counts\n",
+        "class_weights = neg_counts / (pos_counts + 1e-6)\n",
+        "class_weights = class_weights.numpy()"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "-sIbpTJjJ3rB"
+      },
+      "source": [
+        "# Initialize Training Settings"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 10,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "7a7NjypmHti9",
+        "outputId": "072c877c-705c-410d-f66f-ac6366cc821c"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "INFO:pytorch_lightning.utilities.rank_zero:Using 16bit Automatic Mixed Precision (AMP)\n",
+            "INFO:pytorch_lightning.utilities.rank_zero:GPU available: True (cuda), used: True\n",
+            "INFO:pytorch_lightning.utilities.rank_zero:TPU available: False, using: 0 TPU cores\n",
+            "INFO:pytorch_lightning.utilities.rank_zero:HPU available: False, using: 0 HPUs\n",
+            "INFO:pytorch_lightning.utilities.rank_zero:Running in `fast_dev_run` mode: will run the requested loop using 1 batch(es). Logging and checkpointing is suppressed.\n",
+            "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 14 worker processes in total. Our suggested max number of worker in current system is 12, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.\n",
+            "  warnings.warn(\n"
+          ]
+        }
+      ],
+      "source": [
+        "logger = init_logger(log_path=LOG_PATH, model_dir=MODEL_DIR, version=VERSION)\n",
+        "checkpoint = init_checkpoint(cpkt_path=CPKT_PATH, model_dir=MODEL_DIR, version=VERSION)\n",
+        "trainer = Trainer(checkpoint,logger,debug=DEBUG, num_epochs=5)\n",
+        "\n",
+        "if len(LOAD_FROM_CPKT) > 0 and  os.path.exists(LOAD_FROM_CPKT):\n",
+        "    model = CodeT5.load_from_checkpoint(LOAD_FROM_CPKT, class_weights=class_weights, num_classes=num_classes, dropout_rate=DROPOUT_RATE)\n",
+        "else:\n",
+        "    model = CodeT5(class_weights=class_weights, num_classes=num_classes, dropout_rate=DROPOUT_RATE)\n",
+        "model.model.train()\n",
+        "\n",
+        "TRAIN_dataset = CodeT5Dataset(TRAIN_encodings, TRAIN_decodings, TRAIN_classes)\n",
+        "VAL_dataset = CodeT5Dataset(VAL_encodings, VAL_decodings, VAL_classes)\n",
+        "dataloader = DataLoader(TRAIN_dataset, batch_size=BATCH_SIZE,num_workers=14, shuffle=True)\n",
+        "val_dataloader = DataLoader(VAL_dataset, batch_size=1, num_workers=14)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 11,
+      "metadata": {
+        "id": "mhQtadvkHti9",
+        "outputId": "db7dea9b-dceb-4311-d16c-828471729354",
+        "colab": {
+          "base_uri": "https://localhost:8080/",
+          "height": 416,
+          "referenced_widgets": [
+            "e89a59eeafea42aa8e95d34da6482f37",
+            "aa1bfcd53f004b3fad46d5989025546d",
+            "24945aaa599743349c2fabc8bc37e70f",
+            "5ef722269719451eb45e3e2622c4e458",
+            "e6abc6e05a224574af7a304a090b081d",
+            "0763c298b2b04bdf8357bb312117b43c",
+            "234097be714c4514b0fe1b46ae8fec44",
+            "dcf79984c1f14b08b2ce77cfb8ca4398",
+            "0a96da4061994f57892647ba1f18096f",
+            "323f3ce515d0419bb35d68c112f6081c",
+            "f95b1069abaa465e9c56a0eadc6c9eb8",
+            "b0ac5a795cd741339315d44f24ccc51a",
+            "88f4295dd790434d8f20b0eaf5f4cfbd",
+            "6bae834fd8cf4f9ca2709b7a0106d9ed",
+            "7e92e0fd119d4525bcd794c58ed65a71",
+            "9192986e1dbb445eac7985d69a8c08ac",
+            "355f8ad6b9074e778871de7945ccadfd",
+            "4fa207316c50430ebb3f5b7e0ad6c5ad",
+            "44d8135271a546cebf1903d54f0f3169",
+            "da87bd11d4be427fa5988d648d2b92d0",
+            "c7f0d674d3b446908b8f41a00b992ef9",
+            "2d86aa80f0b74d15a78ddb7f8d378dfd"
+          ]
+        }
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "INFO:pytorch_lightning.utilities.rank_zero:You are using a CUDA device ('NVIDIA A100-SXM4-40GB') that has Tensor Cores. To properly utilize them, you should set `torch.set_float32_matmul_precision('medium' | 'high')` which will trade-off precision for performance. For more details, read https://pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html#torch.set_float32_matmul_precision\n",
+            "/usr/local/lib/python3.10/dist-packages/pytorch_lightning/callbacks/model_checkpoint.py:654: Checkpoint directory /content/drive/MyDrive/Thesis/checkpoints exists and is not empty.\n",
+            "INFO:pytorch_lightning.accelerators.cuda:LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]\n",
+            "INFO:pytorch_lightning.callbacks.model_summary:\n",
+            "  | Name       | Type                       | Params | Mode \n",
+            "------------------------------------------------------------------\n",
+            "0 | model      | T5ForConditionalGeneration | 222 M  | train\n",
+            "1 | layer_norm | LayerNorm                  | 1.5 K  | train\n",
+            "2 | dropout    | Dropout                    | 0      | train\n",
+            "3 | classifier | Linear                     | 3.8 K  | train\n",
+            "------------------------------------------------------------------\n",
+            "222 M     Trainable params\n",
+            "0         Non-trainable params\n",
+            "222 M     Total params\n",
+            "891.550   Total estimated model params size (MB)\n",
+            "544       Modules in train mode\n",
+            "0         Modules in eval mode\n"
+          ]
+        },
+        {
+          "output_type": "display_data",
+          "data": {
+            "text/plain": [
+              "Training: |          | 0/? [00:00<?, ?it/s]"
+            ],
+            "application/vnd.jupyter.widget-view+json": {
+              "version_major": 2,
+              "version_minor": 0,
+              "model_id": "e89a59eeafea42aa8e95d34da6482f37"
+            }
+          },
+          "metadata": {}
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...\n"
+          ]
+        },
+        {
+          "output_type": "display_data",
+          "data": {
+            "text/plain": [
+              "Validation: |          | 0/? [00:00<?, ?it/s]"
+            ],
+            "application/vnd.jupyter.widget-view+json": {
+              "version_major": 2,
+              "version_minor": 0,
+              "model_id": "b0ac5a795cd741339315d44f24ccc51a"
+            }
+          },
+          "metadata": {}
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "Passing a tuple of `past_key_values` is deprecated and will be removed in Transformers v4.48.0. You should pass an instance of `EncoderDecoderCache` instead, e.g. `past_key_values=EncoderDecoderCache.from_legacy_cache(past_key_values)`.\n",
+            "INFO:pytorch_lightning.utilities.rank_zero:`Trainer.fit` stopped: `max_steps=1` reached.\n"
+          ]
+        }
+      ],
+      "source": [
+        "trainer.fit(\n",
+        "    model,\n",
+        "    train_dataloaders=dataloader,\n",
+        "    val_dataloaders=val_dataloader\n",
+        ")"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [],
+      "metadata": {
+        "id": "n-h7dz_omWTH",
+        "outputId": "e080d14e-7489-4b98-e4ff-398b748155f3",
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        }
+      },
+      "execution_count": 25,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "fatal: could not read Username for 'https://github.com': No such device or address\n"
+          ]
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "accelerator": "GPU",
+    "colab": {
+      "gpuType": "A100",
+      "machine_shape": "hm",
+      "provenance": []
+    },
+    "kernelspec": {
+      "display_name": "thesis",
+      "language": "python",
+      "name": "python3"
+    },
+    "language_info": {
+      "codemirror_mode": {
+        "name": "ipython",
+        "version": 3
+      },
+      "file_extension": ".py",
+      "mimetype": "text/x-python",
+      "name": "python",
+      "nbconvert_exporter": "python",
+      "pygments_lexer": "ipython3",
+      "version": "3.8.18"
+    },
+    "widgets": {
+      "application/vnd.jupyter.widget-state+json": {
+        "e89a59eeafea42aa8e95d34da6482f37": {
+          "model_module": "@jupyter-widgets/controls",
+          "model_name": "HBoxModel",
+          "model_module_version": "1.5.0",
+          "state": {
+            "_dom_classes": [],
+            "_model_module": "@jupyter-widgets/controls",
+            "_model_module_version": "1.5.0",
+            "_model_name": "HBoxModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/controls",
+            "_view_module_version": "1.5.0",
+            "_view_name": "HBoxView",
+            "box_style": "",
+            "children": [
+              "IPY_MODEL_aa1bfcd53f004b3fad46d5989025546d",
+              "IPY_MODEL_24945aaa599743349c2fabc8bc37e70f",
+              "IPY_MODEL_5ef722269719451eb45e3e2622c4e458"
+            ],
+            "layout": "IPY_MODEL_e6abc6e05a224574af7a304a090b081d"
+          }
+        },
+        "aa1bfcd53f004b3fad46d5989025546d": {
+          "model_module": "@jupyter-widgets/controls",
+          "model_name": "HTMLModel",
+          "model_module_version": "1.5.0",
+          "state": {
+            "_dom_classes": [],
+            "_model_module": "@jupyter-widgets/controls",
+            "_model_module_version": "1.5.0",
+            "_model_name": "HTMLModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/controls",
+            "_view_module_version": "1.5.0",
+            "_view_name": "HTMLView",
+            "description": "",
+            "description_tooltip": null,
+            "layout": "IPY_MODEL_0763c298b2b04bdf8357bb312117b43c",
+            "placeholder": "​",
+            "style": "IPY_MODEL_234097be714c4514b0fe1b46ae8fec44",
+            "value": "Epoch 0: 100%"
+          }
+        },
+        "24945aaa599743349c2fabc8bc37e70f": {
+          "model_module": "@jupyter-widgets/controls",
+          "model_name": "FloatProgressModel",
+          "model_module_version": "1.5.0",
+          "state": {
+            "_dom_classes": [],
+            "_model_module": "@jupyter-widgets/controls",
+            "_model_module_version": "1.5.0",
+            "_model_name": "FloatProgressModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/controls",
+            "_view_module_version": "1.5.0",
+            "_view_name": "ProgressView",
+            "bar_style": "success",
+            "description": "",
+            "description_tooltip": null,
+            "layout": "IPY_MODEL_dcf79984c1f14b08b2ce77cfb8ca4398",
+            "max": 1,
+            "min": 0,
+            "orientation": "horizontal",
+            "style": "IPY_MODEL_0a96da4061994f57892647ba1f18096f",
+            "value": 1
+          }
+        },
+        "5ef722269719451eb45e3e2622c4e458": {
+          "model_module": "@jupyter-widgets/controls",
+          "model_name": "HTMLModel",
+          "model_module_version": "1.5.0",
+          "state": {
+            "_dom_classes": [],
+            "_model_module": "@jupyter-widgets/controls",
+            "_model_module_version": "1.5.0",
+            "_model_name": "HTMLModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/controls",
+            "_view_module_version": "1.5.0",
+            "_view_name": "HTMLView",
+            "description": "",
+            "description_tooltip": null,
+            "layout": "IPY_MODEL_323f3ce515d0419bb35d68c112f6081c",
+            "placeholder": "​",
+            "style": "IPY_MODEL_f95b1069abaa465e9c56a0eadc6c9eb8",
+            "value": " 1/1 [00:02&lt;00:00,  0.46it/s, train_loss=0.795, val_loss=0.814]"
+          }
+        },
+        "e6abc6e05a224574af7a304a090b081d": {
+          "model_module": "@jupyter-widgets/base",
+          "model_name": "LayoutModel",
+          "model_module_version": "1.2.0",
+          "state": {
+            "_model_module": "@jupyter-widgets/base",
+            "_model_module_version": "1.2.0",
+            "_model_name": "LayoutModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/base",
+            "_view_module_version": "1.2.0",
+            "_view_name": "LayoutView",
+            "align_content": null,
+            "align_items": null,
+            "align_self": null,
+            "border": null,
+            "bottom": null,
+            "display": "inline-flex",
+            "flex": null,
+            "flex_flow": "row wrap",
+            "grid_area": null,
+            "grid_auto_columns": null,
+            "grid_auto_flow": null,
+            "grid_auto_rows": null,
+            "grid_column": null,
+            "grid_gap": null,
+            "grid_row": null,
+            "grid_template_areas": null,
+            "grid_template_columns": null,
+            "grid_template_rows": null,
+            "height": null,
+            "justify_content": null,
+            "justify_items": null,
+            "left": null,
+            "margin": null,
+            "max_height": null,
+            "max_width": null,
+            "min_height": null,
+            "min_width": null,
+            "object_fit": null,
+            "object_position": null,
+            "order": null,
+            "overflow": null,
+            "overflow_x": null,
+            "overflow_y": null,
+            "padding": null,
+            "right": null,
+            "top": null,
+            "visibility": null,
+            "width": "100%"
+          }
+        },
+        "0763c298b2b04bdf8357bb312117b43c": {
+          "model_module": "@jupyter-widgets/base",
+          "model_name": "LayoutModel",
+          "model_module_version": "1.2.0",
+          "state": {
+            "_model_module": "@jupyter-widgets/base",
+            "_model_module_version": "1.2.0",
+            "_model_name": "LayoutModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/base",
+            "_view_module_version": "1.2.0",
+            "_view_name": "LayoutView",
+            "align_content": null,
+            "align_items": null,
+            "align_self": null,
+            "border": null,
+            "bottom": null,
+            "display": null,
+            "flex": null,
+            "flex_flow": null,
+            "grid_area": null,
+            "grid_auto_columns": null,
+            "grid_auto_flow": null,
+            "grid_auto_rows": null,
+            "grid_column": null,
+            "grid_gap": null,
+            "grid_row": null,
+            "grid_template_areas": null,
+            "grid_template_columns": null,
+            "grid_template_rows": null,
+            "height": null,
+            "justify_content": null,
+            "justify_items": null,
+            "left": null,
+            "margin": null,
+            "max_height": null,
+            "max_width": null,
+            "min_height": null,
+            "min_width": null,
+            "object_fit": null,
+            "object_position": null,
+            "order": null,
+            "overflow": null,
+            "overflow_x": null,
+            "overflow_y": null,
+            "padding": null,
+            "right": null,
+            "top": null,
+            "visibility": null,
+            "width": null
+          }
+        },
+        "234097be714c4514b0fe1b46ae8fec44": {
+          "model_module": "@jupyter-widgets/controls",
+          "model_name": "DescriptionStyleModel",
+          "model_module_version": "1.5.0",
+          "state": {
+            "_model_module": "@jupyter-widgets/controls",
+            "_model_module_version": "1.5.0",
+            "_model_name": "DescriptionStyleModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/base",
+            "_view_module_version": "1.2.0",
+            "_view_name": "StyleView",
+            "description_width": ""
+          }
+        },
+        "dcf79984c1f14b08b2ce77cfb8ca4398": {
+          "model_module": "@jupyter-widgets/base",
+          "model_name": "LayoutModel",
+          "model_module_version": "1.2.0",
+          "state": {
+            "_model_module": "@jupyter-widgets/base",
+            "_model_module_version": "1.2.0",
+            "_model_name": "LayoutModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/base",
+            "_view_module_version": "1.2.0",
+            "_view_name": "LayoutView",
+            "align_content": null,
+            "align_items": null,
+            "align_self": null,
+            "border": null,
+            "bottom": null,
+            "display": null,
+            "flex": "2",
+            "flex_flow": null,
+            "grid_area": null,
+            "grid_auto_columns": null,
+            "grid_auto_flow": null,
+            "grid_auto_rows": null,
+            "grid_column": null,
+            "grid_gap": null,
+            "grid_row": null,
+            "grid_template_areas": null,
+            "grid_template_columns": null,
+            "grid_template_rows": null,
+            "height": null,
+            "justify_content": null,
+            "justify_items": null,
+            "left": null,
+            "margin": null,
+            "max_height": null,
+            "max_width": null,
+            "min_height": null,
+            "min_width": null,
+            "object_fit": null,
+            "object_position": null,
+            "order": null,
+            "overflow": null,
+            "overflow_x": null,
+            "overflow_y": null,
+            "padding": null,
+            "right": null,
+            "top": null,
+            "visibility": null,
+            "width": null
+          }
+        },
+        "0a96da4061994f57892647ba1f18096f": {
+          "model_module": "@jupyter-widgets/controls",
+          "model_name": "ProgressStyleModel",
+          "model_module_version": "1.5.0",
+          "state": {
+            "_model_module": "@jupyter-widgets/controls",
+            "_model_module_version": "1.5.0",
+            "_model_name": "ProgressStyleModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/base",
+            "_view_module_version": "1.2.0",
+            "_view_name": "StyleView",
+            "bar_color": null,
+            "description_width": ""
+          }
+        },
+        "323f3ce515d0419bb35d68c112f6081c": {
+          "model_module": "@jupyter-widgets/base",
+          "model_name": "LayoutModel",
+          "model_module_version": "1.2.0",
+          "state": {
+            "_model_module": "@jupyter-widgets/base",
+            "_model_module_version": "1.2.0",
+            "_model_name": "LayoutModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/base",
+            "_view_module_version": "1.2.0",
+            "_view_name": "LayoutView",
+            "align_content": null,
+            "align_items": null,
+            "align_self": null,
+            "border": null,
+            "bottom": null,
+            "display": null,
+            "flex": null,
+            "flex_flow": null,
+            "grid_area": null,
+            "grid_auto_columns": null,
+            "grid_auto_flow": null,
+            "grid_auto_rows": null,
+            "grid_column": null,
+            "grid_gap": null,
+            "grid_row": null,
+            "grid_template_areas": null,
+            "grid_template_columns": null,
+            "grid_template_rows": null,
+            "height": null,
+            "justify_content": null,
+            "justify_items": null,
+            "left": null,
+            "margin": null,
+            "max_height": null,
+            "max_width": null,
+            "min_height": null,
+            "min_width": null,
+            "object_fit": null,
+            "object_position": null,
+            "order": null,
+            "overflow": null,
+            "overflow_x": null,
+            "overflow_y": null,
+            "padding": null,
+            "right": null,
+            "top": null,
+            "visibility": null,
+            "width": null
+          }
+        },
+        "f95b1069abaa465e9c56a0eadc6c9eb8": {
+          "model_module": "@jupyter-widgets/controls",
+          "model_name": "DescriptionStyleModel",
+          "model_module_version": "1.5.0",
+          "state": {
+            "_model_module": "@jupyter-widgets/controls",
+            "_model_module_version": "1.5.0",
+            "_model_name": "DescriptionStyleModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/base",
+            "_view_module_version": "1.2.0",
+            "_view_name": "StyleView",
+            "description_width": ""
+          }
+        },
+        "b0ac5a795cd741339315d44f24ccc51a": {
+          "model_module": "@jupyter-widgets/controls",
+          "model_name": "HBoxModel",
+          "model_module_version": "1.5.0",
+          "state": {
+            "_dom_classes": [],
+            "_model_module": "@jupyter-widgets/controls",
+            "_model_module_version": "1.5.0",
+            "_model_name": "HBoxModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/controls",
+            "_view_module_version": "1.5.0",
+            "_view_name": "HBoxView",
+            "box_style": "",
+            "children": [
+              "IPY_MODEL_88f4295dd790434d8f20b0eaf5f4cfbd",
+              "IPY_MODEL_6bae834fd8cf4f9ca2709b7a0106d9ed",
+              "IPY_MODEL_7e92e0fd119d4525bcd794c58ed65a71"
+            ],
+            "layout": "IPY_MODEL_9192986e1dbb445eac7985d69a8c08ac"
+          }
+        },
+        "88f4295dd790434d8f20b0eaf5f4cfbd": {
+          "model_module": "@jupyter-widgets/controls",
+          "model_name": "HTMLModel",
+          "model_module_version": "1.5.0",
+          "state": {
+            "_dom_classes": [],
+            "_model_module": "@jupyter-widgets/controls",
+            "_model_module_version": "1.5.0",
+            "_model_name": "HTMLModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/controls",
+            "_view_module_version": "1.5.0",
+            "_view_name": "HTMLView",
+            "description": "",
+            "description_tooltip": null,
+            "layout": "IPY_MODEL_355f8ad6b9074e778871de7945ccadfd",
+            "placeholder": "​",
+            "style": "IPY_MODEL_4fa207316c50430ebb3f5b7e0ad6c5ad",
+            "value": "Validation DataLoader 0: 100%"
+          }
+        },
+        "6bae834fd8cf4f9ca2709b7a0106d9ed": {
+          "model_module": "@jupyter-widgets/controls",
+          "model_name": "FloatProgressModel",
+          "model_module_version": "1.5.0",
+          "state": {
+            "_dom_classes": [],
+            "_model_module": "@jupyter-widgets/controls",
+            "_model_module_version": "1.5.0",
+            "_model_name": "FloatProgressModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/controls",
+            "_view_module_version": "1.5.0",
+            "_view_name": "ProgressView",
+            "bar_style": "",
+            "description": "",
+            "description_tooltip": null,
+            "layout": "IPY_MODEL_44d8135271a546cebf1903d54f0f3169",
+            "max": 1,
+            "min": 0,
+            "orientation": "horizontal",
+            "style": "IPY_MODEL_da87bd11d4be427fa5988d648d2b92d0",
+            "value": 1
+          }
+        },
+        "7e92e0fd119d4525bcd794c58ed65a71": {
+          "model_module": "@jupyter-widgets/controls",
+          "model_name": "HTMLModel",
+          "model_module_version": "1.5.0",
+          "state": {
+            "_dom_classes": [],
+            "_model_module": "@jupyter-widgets/controls",
+            "_model_module_version": "1.5.0",
+            "_model_name": "HTMLModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/controls",
+            "_view_module_version": "1.5.0",
+            "_view_name": "HTMLView",
+            "description": "",
+            "description_tooltip": null,
+            "layout": "IPY_MODEL_c7f0d674d3b446908b8f41a00b992ef9",
+            "placeholder": "​",
+            "style": "IPY_MODEL_2d86aa80f0b74d15a78ddb7f8d378dfd",
+            "value": " 1/1 [00:00&lt;00:00,  8.31it/s]"
+          }
+        },
+        "9192986e1dbb445eac7985d69a8c08ac": {
+          "model_module": "@jupyter-widgets/base",
+          "model_name": "LayoutModel",
+          "model_module_version": "1.2.0",
+          "state": {
+            "_model_module": "@jupyter-widgets/base",
+            "_model_module_version": "1.2.0",
+            "_model_name": "LayoutModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/base",
+            "_view_module_version": "1.2.0",
+            "_view_name": "LayoutView",
+            "align_content": null,
+            "align_items": null,
+            "align_self": null,
+            "border": null,
+            "bottom": null,
+            "display": "inline-flex",
+            "flex": null,
+            "flex_flow": "row wrap",
+            "grid_area": null,
+            "grid_auto_columns": null,
+            "grid_auto_flow": null,
+            "grid_auto_rows": null,
+            "grid_column": null,
+            "grid_gap": null,
+            "grid_row": null,
+            "grid_template_areas": null,
+            "grid_template_columns": null,
+            "grid_template_rows": null,
+            "height": null,
+            "justify_content": null,
+            "justify_items": null,
+            "left": null,
+            "margin": null,
+            "max_height": null,
+            "max_width": null,
+            "min_height": null,
+            "min_width": null,
+            "object_fit": null,
+            "object_position": null,
+            "order": null,
+            "overflow": null,
+            "overflow_x": null,
+            "overflow_y": null,
+            "padding": null,
+            "right": null,
+            "top": null,
+            "visibility": "hidden",
+            "width": "100%"
+          }
+        },
+        "355f8ad6b9074e778871de7945ccadfd": {
+          "model_module": "@jupyter-widgets/base",
+          "model_name": "LayoutModel",
+          "model_module_version": "1.2.0",
+          "state": {
+            "_model_module": "@jupyter-widgets/base",
+            "_model_module_version": "1.2.0",
+            "_model_name": "LayoutModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/base",
+            "_view_module_version": "1.2.0",
+            "_view_name": "LayoutView",
+            "align_content": null,
+            "align_items": null,
+            "align_self": null,
+            "border": null,
+            "bottom": null,
+            "display": null,
+            "flex": null,
+            "flex_flow": null,
+            "grid_area": null,
+            "grid_auto_columns": null,
+            "grid_auto_flow": null,
+            "grid_auto_rows": null,
+            "grid_column": null,
+            "grid_gap": null,
+            "grid_row": null,
+            "grid_template_areas": null,
+            "grid_template_columns": null,
+            "grid_template_rows": null,
+            "height": null,
+            "justify_content": null,
+            "justify_items": null,
+            "left": null,
+            "margin": null,
+            "max_height": null,
+            "max_width": null,
+            "min_height": null,
+            "min_width": null,
+            "object_fit": null,
+            "object_position": null,
+            "order": null,
+            "overflow": null,
+            "overflow_x": null,
+            "overflow_y": null,
+            "padding": null,
+            "right": null,
+            "top": null,
+            "visibility": null,
+            "width": null
+          }
+        },
+        "4fa207316c50430ebb3f5b7e0ad6c5ad": {
+          "model_module": "@jupyter-widgets/controls",
+          "model_name": "DescriptionStyleModel",
+          "model_module_version": "1.5.0",
+          "state": {
+            "_model_module": "@jupyter-widgets/controls",
+            "_model_module_version": "1.5.0",
+            "_model_name": "DescriptionStyleModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/base",
+            "_view_module_version": "1.2.0",
+            "_view_name": "StyleView",
+            "description_width": ""
+          }
+        },
+        "44d8135271a546cebf1903d54f0f3169": {
+          "model_module": "@jupyter-widgets/base",
+          "model_name": "LayoutModel",
+          "model_module_version": "1.2.0",
+          "state": {
+            "_model_module": "@jupyter-widgets/base",
+            "_model_module_version": "1.2.0",
+            "_model_name": "LayoutModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/base",
+            "_view_module_version": "1.2.0",
+            "_view_name": "LayoutView",
+            "align_content": null,
+            "align_items": null,
+            "align_self": null,
+            "border": null,
+            "bottom": null,
+            "display": null,
+            "flex": "2",
+            "flex_flow": null,
+            "grid_area": null,
+            "grid_auto_columns": null,
+            "grid_auto_flow": null,
+            "grid_auto_rows": null,
+            "grid_column": null,
+            "grid_gap": null,
+            "grid_row": null,
+            "grid_template_areas": null,
+            "grid_template_columns": null,
+            "grid_template_rows": null,
+            "height": null,
+            "justify_content": null,
+            "justify_items": null,
+            "left": null,
+            "margin": null,
+            "max_height": null,
+            "max_width": null,
+            "min_height": null,
+            "min_width": null,
+            "object_fit": null,
+            "object_position": null,
+            "order": null,
+            "overflow": null,
+            "overflow_x": null,
+            "overflow_y": null,
+            "padding": null,
+            "right": null,
+            "top": null,
+            "visibility": null,
+            "width": null
+          }
+        },
+        "da87bd11d4be427fa5988d648d2b92d0": {
+          "model_module": "@jupyter-widgets/controls",
+          "model_name": "ProgressStyleModel",
+          "model_module_version": "1.5.0",
+          "state": {
+            "_model_module": "@jupyter-widgets/controls",
+            "_model_module_version": "1.5.0",
+            "_model_name": "ProgressStyleModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/base",
+            "_view_module_version": "1.2.0",
+            "_view_name": "StyleView",
+            "bar_color": null,
+            "description_width": ""
+          }
+        },
+        "c7f0d674d3b446908b8f41a00b992ef9": {
+          "model_module": "@jupyter-widgets/base",
+          "model_name": "LayoutModel",
+          "model_module_version": "1.2.0",
+          "state": {
+            "_model_module": "@jupyter-widgets/base",
+            "_model_module_version": "1.2.0",
+            "_model_name": "LayoutModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/base",
+            "_view_module_version": "1.2.0",
+            "_view_name": "LayoutView",
+            "align_content": null,
+            "align_items": null,
+            "align_self": null,
+            "border": null,
+            "bottom": null,
+            "display": null,
+            "flex": null,
+            "flex_flow": null,
+            "grid_area": null,
+            "grid_auto_columns": null,
+            "grid_auto_flow": null,
+            "grid_auto_rows": null,
+            "grid_column": null,
+            "grid_gap": null,
+            "grid_row": null,
+            "grid_template_areas": null,
+            "grid_template_columns": null,
+            "grid_template_rows": null,
+            "height": null,
+            "justify_content": null,
+            "justify_items": null,
+            "left": null,
+            "margin": null,
+            "max_height": null,
+            "max_width": null,
+            "min_height": null,
+            "min_width": null,
+            "object_fit": null,
+            "object_position": null,
+            "order": null,
+            "overflow": null,
+            "overflow_x": null,
+            "overflow_y": null,
+            "padding": null,
+            "right": null,
+            "top": null,
+            "visibility": null,
+            "width": null
+          }
+        },
+        "2d86aa80f0b74d15a78ddb7f8d378dfd": {
+          "model_module": "@jupyter-widgets/controls",
+          "model_name": "DescriptionStyleModel",
+          "model_module_version": "1.5.0",
+          "state": {
+            "_model_module": "@jupyter-widgets/controls",
+            "_model_module_version": "1.5.0",
+            "_model_name": "DescriptionStyleModel",
+            "_view_count": null,
+            "_view_module": "@jupyter-widgets/base",
+            "_view_module_version": "1.2.0",
+            "_view_name": "StyleView",
+            "description_width": ""
+          }
+        }
+      }
+    }
+  },
+  "nbformat": 4,
+  "nbformat_minor": 0
+}
