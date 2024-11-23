@@ -116,12 +116,13 @@ class CodeT5(pl.LightningModule):
         model_dir: str = 'Salesforce/codet5-base', 
         num_classes: int = 6, 
         dropout_rate=0.1,
-        with_activation: bool = False
+        with_activation: bool = False,
+        with_layer_norm: bool = False
         ) -> None:
         super().__init__()
         self.model_dir = model_dir
         self.tokenizer = RobertaTokenizer.from_pretrained(self.model_dir)
-        self.model = T5ForConditionalGeneration.from_pretrained(model_dir) 
+        self.model = T5ForConditionalGeneration.from_pretrained(self.model_dir) 
         self.predictions = []
         self.labels = []
         self.classes = ["mobile","functionality","ui-ux","compatibility-performance","network-security","general"] if num_classes == 6  else ["functionality","ui-ux","compatibility-performance","network-security","general"]
@@ -129,7 +130,10 @@ class CodeT5(pl.LightningModule):
         self.confusion_matrices = []
         self.generated_codes = []
         self.dropout_rate = dropout_rate
-        self.layer_norm = nn.LayerNorm(self.model.config.d_model)
+        self.with_layer_norm = with_layer_norm
+        if self.with_layer_norm:
+            self.layer_norm = nn.LayerNorm(self.model.config.d_model)
+        
         self.dropout = nn.Dropout(p=self.dropout_rate)
         self.with_activation = with_activation
         if self.with_activation:
@@ -150,10 +154,11 @@ class CodeT5(pl.LightningModule):
         )
         # Get the last hidden state of the encoder output 
         encoder_hidden_states = output.encoder_last_hidden_state
-        # Apply layer normalization
-        normalized_states = self.layer_norm(encoder_hidden_states)
+        if self.with_layer_norm:
+            # Apply layer normalization
+            pooled_output = self.layer_norm(encoder_hidden_states)
         # Pooling: Average of the sequence length
-        pooled_output = torch.mean(normalized_states, dim=1)
+        pooled_output = torch.mean(pooled_output, dim=1)
         # Pass it through a dropout layer before the classifier
         pooled_output = self.dropout(pooled_output)
         if self.with_activation:
