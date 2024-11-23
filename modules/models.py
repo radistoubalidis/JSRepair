@@ -160,7 +160,7 @@ class CodeT5(pl.LightningModule):
         # Pooling: Average of the sequence length
         hidden_states_output = torch.mean(hidden_states_output, dim=1)
         # Pass it through a dropout layer before the classifier
-        hidden_states_output = self.dropout(hidden_states_output)
+        # hidden_states_output = self.dropout(hidden_states_output)
         if self.with_activation:
             # Pass it through an activation function using a hidden layer
             hidden_states_output = self.activation(self.hidden_layer(hidden_states_output))
