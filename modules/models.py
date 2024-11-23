@@ -2,6 +2,7 @@ from typing import Any
 from datetime import datetime
 from difflib import unified_diff
 from lightning.pytorch.utilities.types import STEP_OUTPUT
+from mdurl import decode
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from transformers import (
     RobertaForMaskedLM,
@@ -134,37 +135,57 @@ class CodeT5(pl.LightningModule):
         if self.with_layer_norm:
             self.layer_norm = nn.LayerNorm(self.model.config.d_model)
         
-        self.dropout = nn.Dropout(p=self.dropout_rate)
         self.with_activation = with_activation
         if self.with_activation:
-            self.hidden_layer = nn.Linear(self.model.config.d_model, 256)
+            hiddenLayerDim = self.model.config.d_model // 2
+            classifierInFeatures = 2 * hiddenLayerDim
+            self.hidden_layer = nn.Linear(self.model.config.d_model, hiddenLayerDim)
             self.activation = nn.ReLU()
-            self.classifier = nn.Linear(256, num_classes)
+            self.dropout = nn.Dropout(p=self.dropout_rate)
+            self.classifier = nn.Linear(classifierInFeatures, num_classes)
         else:
+            self.dropout = nn.Dropout(p=self.dropout_rate)
             self.classifier = nn.Linear(self.model.config.d_model, num_classes)
             
         self.class_weights = torch.tensor(class_weights)
+    
+    def classifier_layers(self, output):
+        def apply_layers(hidden_state):
+            # Apply layer normalization
+            output = hidden_state
+            
+            # Pooling: Average of the sequence length
+            output = torch.mean(output, dim=1)
+            if self.with_layer_norm:
+                output = self.layer_norm(output)
+            
+            # Pass it through an activation function using a hidden layer
+            if self.with_activation:
+                output = self.activation(self.hidden_layer(output))
+            # Pass it through a dropout layer before the classifier
+            output = self.dropout(output)
+            return output
         
+        # Get the last hidden state of the encoder/decoder output 
+        encoder_hidden_states = output.encoder_last_hidden_state
+        decoder_hidden_states = output.decoder_hidden_states[-1]
+        encoder_output = apply_layers(encoder_hidden_states)
+        decoder_output = apply_layers(decoder_hidden_states)
+        
+        # Combine decoder/encoder outputs
+        combined_output = torch.cat([encoder_output, decoder_output], dim=-1)
+        combined_output = self.dropout(combined_output)
+        return combined_output
         
     def forward(self, batch):
         output = self.model(
             input_ids=batch['input_ids'],
             attention_mask=batch['attention_mask'],
             labels=batch['labels'],
+            output_hidden_states=True
         )
         # Get the last hidden state of the encoder output 
-        hidden_states_output = output.encoder_last_hidden_state
-        if self.with_layer_norm:
-            # Apply layer normalization
-            hidden_states_output = self.layer_norm(hidden_states_output)
-        # Pooling: Average of the sequence length
-        hidden_states_output = torch.mean(hidden_states_output, dim=1)
-        # Pass it through a dropout layer before the classifier
-        # hidden_states_output = self.dropout(hidden_states_output)
-        if self.with_activation:
-            # Pass it through an activation function using a hidden layer
-            hidden_states_output = self.activation(self.hidden_layer(hidden_states_output))
-        
+        hidden_states_output = self.classifier_layers(output)
         classification_logits = self.classifier(hidden_states_output)
         return output.loss, output.logits, classification_logits
     
@@ -207,12 +228,12 @@ class CodeT5(pl.LightningModule):
         self.conf_matrix_plot(all_labels,all_predictions)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=1e-5)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=0.0001)
         return optimizer
     
     def classification_loss(self, logits, labels):
         return nn.functional.binary_cross_entropy_with_logits(
-            logits, labels.float(), pos_weight=self.class_weights.to(logits.device)
+            logits, labels.float() #, pos_weight=self.class_weights.to(logits.device)
             )
     
     def conf_matrix_plot(self, all_labels, all_predictions):
