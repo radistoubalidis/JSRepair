@@ -21,52 +21,99 @@ import seaborn as sns
 
 
 class CodeBertJS(pl.LightningModule):
-    def __init__(self, tokenizer: RobertaTokenizer) -> None:
+    def __init__(
+        self, 
+        tokenizer: RobertaTokenizer,
+        class_weights: np.array, 
+        model_dir: str = 'microsoft/codebert-base-mlm', 
+        num_classes: int = 6, 
+        dropout_rate: float =0.1,
+        with_activation: bool = False,
+        with_layer_norm: bool = False
+        ) -> None:
         super().__init__()
+        self.model_dir = model_dir
         self.encoder = RobertaForMaskedLM.from_pretrained(
-                    'microsoft/codebert-base-mlm',
+                    model_dir,
                     output_hidden_states=True,
                     output_attentions=True,
                     num_beams=5,
                     num_beam_groups=2,
                     return_dict=True,
                 )
-        self.criterion = nn.CrossEntropyLoss()
-        self.tokenizer = tokenizer
-        self.last_validation_batch = None
-        self.last_validation_output = None
-    
-    def forward(self, input_ids, attention_mask = None, gt_input_ids = None):
-        if attention_mask is not None and gt_input_ids is not None:
-            encoder_output = self.encoder(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-            )
-            # Cross Entropy loss between output logits and gt_input_ids
-            loss = self.criterion(encoder_output.logits.view(-1, self.encoder.config.vocab_size), gt_input_ids.view(-1))
-            return loss, encoder_output.logits
+        self.classes = ["mobile","functionality","ui-ux","compatibility-performance","network-security","general"] if num_classes == 6  else ["functionality","ui-ux","compatibility-performance","network-security","general"]
+        self.dropout_rate = dropout_rate
+        self.with_layer_norm = with_layer_norm
+        if self.with_layer_norm:
+            self.layer_norm = nn.LayerNorm(self.encoder.config.hidden_size)
+        
+        self.with_activation = with_activation
+        if self.with_activation:
+            hiddenLayerDim = self.encoder.config.hidden_size
+            classifierInFeatures = hiddenLayerDim
+            self.hidden_layer = nn.Linear(self.encoder.config.hidden_size, hiddenLayerDim)
+            self.activation = nn.ReLU()
+            self.dropout = nn.Dropout(p=self.dropout_rate)
+            self.classifier = nn.Linear(classifierInFeatures, num_classes)
         else:
-            return self.encoder(input_ids)
+            self.dropout = nn.Dropout(p=self.dropout_rate)
+            self.classifier = nn.Linear(self.encoder.config.hidden_size, num_classes)
+        self.class_weights = torch.tensor(class_weights)
+        self.tokenizer = tokenizer
+    
+    def classifier_layers(self, output):
+        def apply_layers(hidden_state):
+            # Apply layer normalization
+            output = hidden_state
+            
+            # Pooling: Average of the sequence length
+            output = torch.mean(output, dim=1)
+            if self.with_layer_norm:
+                output = self.layer_norm(output)
+            
+            # Pass it through an activation function using a hidden layer
+            if self.with_activation:
+                output = self.activation(self.hidden_layer(output))
+
+            # Pass it through a dropout layer before the classifier
+            output = self.dropout(output)
+            return output
+        
+        # Get the last hidden state of the encoder/decoder output
+        encoder_hidden_states = output.hidden_states[-1]
+        encoder_output = apply_layers(encoder_hidden_states)
+        
+        # Combine decoder/encoder outputs
+        encoder_output = self.dropout(encoder_output)
+        return encoder_output
+    
+    def forward(self, batch):
+        encoder_output = self.encoder(
+            input_ids=batch['input_ids'],
+            attention_mask=batch['attention_mask'],
+            labels=batch['gt_input_ids'],
+            output_hidden_states=True
+        )
+        hidden_states_output = self.classifier_layers(encoder_output)
+
+        classification_logits = self.classifier(hidden_states_output)
+        return encoder_output.loss, encoder_output.logits, classification_logits
         
 
     def training_step(self, batch, batch_idx):
-        input_ids = batch['input_ids']
-        attention_mask = batch['attention_mask']
-        gt_input_ids = batch['gt_input_ids']
-        loss, outputs = self.forward(input_ids, attention_mask, gt_input_ids)
+        torch.set_grad_enabled(True)
+        self.encoder.gradient_checkpointing_enable()
+        loss, outputs, classification_logits = self.forward(batch)
+        classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
 
-        self.log("train_loss", loss, prog_bar=True, logger=True)
-        return loss
+        self.log("train_loss", classification_loss, prog_bar=True, logger=True)
+        return {'classification_loss' : classification_loss, 'loss': loss}
 
     def validation_step(self, batch, batch_idx):
-        input_ids = batch['input_ids']
-        attention_mask = batch['attention_mask']
-        gt_input_ids = batch['gt_input_ids']
-        self.last_validation_batch = batch
-        loss, outputs = self.forward(input_ids, attention_mask, gt_input_ids)
-        self.last_validation_output = outputs
-        self.log("val_loss", loss, prog_bar=True, logger=True)
-        return loss
+        loss, outputs, classification_logits = self.forward(batch)
+        classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
+        self.log("val_loss", classification_loss, prog_bar=True, logger=True)
+        return {'classification_loss' : classification_loss, 'loss': loss}
 
     def test_step(self, batch, batch_idx):
         input_ids = batch['input_ids']
@@ -81,34 +128,15 @@ class CodeBertJS(pl.LightningModule):
         return self.model(
             input_ids=input_ids,
         )
-        
-    def on_validation_end(self):
-        last_input_tokens = self.tokenizer.convert_ids_to_tokens(self.last_validation_batch['input_ids'][-1])
-        last_gt_tokens = self.tokenizer.convert_ids_to_tokens(self.last_validation_batch['gt_input_ids'][-1])
-        last_output_tokens = torch.argmax(self.last_validation_output, dim=-1).tolist()
-        last_input_seq = self.tokenizer.convert_tokens_to_string(last_input_tokens).replace('<s>','').replace('</s>','').replace('<pad>','')
-        last_gt_seq = self.tokenizer.convert_tokens_to_string(last_gt_tokens).replace('<s>','').replace('</s>','').replace('<pad>','')
-        codeDiff = unified_diff(last_input_seq, last_gt_seq)
-        codeDiffStr = "\n".join(codeDiff)
-        last_output_seq = self.tokenizer.batch_decode(last_output_tokens[-1], skip_special_tokens=True)
-        print(last_output_seq)
-        raise ValueError
-        last_output_seq = self.tokenizer.convert_tokens_to_string(last_output_seq)
-        
-        log_msg = f"""
-        Val Batch Sample:
-        --------------------Output Code-------------------
-        {last_output_seq}
-        --------------------Code Diff---------------------
-        {codeDiffStr}
-        """
-        with open(f"train-{datetime.today().strftime('%Y-%m-%d')}-CodeBert.log", 'a') as f:
-            f.write(log_msg)
 
     def configure_optimizers(self) -> optim.Adam:
         optimizer = optim.Adam(self.parameters(), lr=0.0001)
         return optimizer
 
+    def classification_loss(self, logits, labels):
+        return nn.functional.binary_cross_entropy_with_logits(
+            logits, labels.float(), pos_weight=self.class_weights.to(logits.device)
+            )
     
 class CodeT5(pl.LightningModule): 
     def __init__(
@@ -233,7 +261,7 @@ class CodeT5(pl.LightningModule):
     
     def classification_loss(self, logits, labels):
         return nn.functional.binary_cross_entropy_with_logits(
-            logits, labels.float() #, pos_weight=self.class_weights.to(logits.device)
+            logits, labels.float(), pos_weight=self.class_weights.to(logits.device)
             )
     
     def conf_matrix_plot(self, all_labels, all_predictions):
