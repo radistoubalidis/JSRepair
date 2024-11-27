@@ -47,6 +47,9 @@ class CodeBertJS(pl.LightningModule):
         if self.with_layer_norm:
             self.layer_norm = nn.LayerNorm(self.encoder.config.hidden_size)
         
+        self.predictions = []
+        self.labels = []
+        self.generated_codes = []
         self.with_activation = with_activation
         if self.with_activation:
             hiddenLayerDim = self.encoder.config.hidden_size
@@ -116,13 +119,27 @@ class CodeBertJS(pl.LightningModule):
         return {'classification_loss' : classification_loss, 'loss': loss}
 
     def test_step(self, batch, batch_idx):
-        input_ids = batch['input_ids']
-        attention_mask = batch['attention_mask']
-        gt_input_ids = batch['gt_input_ids']
-        loss, outputs = self.forward(input_ids, attention_mask, gt_input_ids)
-
-        self.log("test_loss", loss, prog_bar=True, logger=True)
-        return loss
+        loss, outputs, classification_logits = self.forward(batch)
+        classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
+        self.log("test_loss", classification_loss, prog_bar=True, logger=True)
+        return {
+            'classification_loss' : classification_loss, 
+            'loss': loss,
+            'logits': outputs,
+            'classification_logits': classification_logits
+            }
+        
+    def on_test_batch_end(self, outputs: STEP_OUTPUT, batch: Any, batch_idx: int):
+        probs = torch.sigmoid(outputs['classification_logits'])
+        preds = (probs > 0.5).float()
+        self.generated_codes.append(self.decode_output(outputs['logits']))
+        self.predictions.append(preds)
+        self.labels.append(batch['class_labels'])
+    
+    def on_test_epoch_end(self):
+        all_predictions = torch.cat(self.predictions).cpu().numpy()
+        all_labels = torch.cat(self.labels).cpu().numpy()
+        self.conf_matrix_plot(all_labels,all_predictions)
     
     def predict_step(self, input_ids, gt_input_ids):
         return self.model(
@@ -137,6 +154,39 @@ class CodeBertJS(pl.LightningModule):
         return nn.functional.binary_cross_entropy_with_logits(
             logits, labels.float(), pos_weight=self.class_weights.to(logits.device)
             )
+    
+    def conf_matrix_plot(self, all_labels, all_predictions):
+        model_name = os.environ['MODEL_NAME']
+        version = int(os.environ['VERSION'])
+        metrics_path = os.environ['METRICS_PATH']
+        if not os.path.exists(f"{metrics_path}/{model_name}_v{version}"):
+            os.mkdir(f"{metrics_path}/{model_name}_v{version}")
+        
+        num_classes = all_labels.shape[1]
+        n_cols = 2
+        n_rows = (num_classes + n_cols - 1) // n_cols
+
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
+        axes = axes.flatten()
+
+        for i in range(num_classes):
+            cm = confusion_matrix(all_labels[:, i], all_predictions[:, i])
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False, ax=axes[i])
+            axes[i].set_xlabel('Predicted')
+            axes[i].set_ylabel('Ground Truth')
+            axes[i].set_title(f'Confusion Matrix for {self.classes[i]}')
+
+        for j in range(num_classes, len(axes)):
+            fig.delaxes(axes[j])
+
+        plt.tight_layout()
+        plt.savefig(f"{metrics_path}/{model_name}_v{version}/confusion_matrices.png")
+        plt.show()
+        
+    def decode_output(self, output) -> str:
+        tokens = torch.argmax(output, dim=-1)
+        code = self.tokenizer.batch_decode(tokens, skip_special_tokens=True)[0]
+        return code
     
 class CodeT5(pl.LightningModule): 
     def __init__(
@@ -156,7 +206,6 @@ class CodeT5(pl.LightningModule):
         self.labels = []
         self.classes = ["mobile","functionality","ui-ux","compatibility-performance","network-security","general"] if num_classes == 6  else ["functionality","ui-ux","compatibility-performance","network-security","general"]
         self.save_hyperparameters()
-        self.confusion_matrices = []
         self.generated_codes = []
         self.dropout_rate = dropout_rate
         self.with_layer_norm = with_layer_norm

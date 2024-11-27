@@ -166,3 +166,50 @@ def add_labels(bType: List[str], classLabels: dict):
         else:
             sample_labels[key] = 0.
     return list(sample_labels.values())
+
+def bug_type_dist_query(with_mobile: bool, table: str) -> str:
+    if with_mobile:
+        query = f"""select count(*) ,'general' as "bug_type"
+        from {table}
+        where bug_type like '%general%'
+        union 
+        select count(*), 'mobile' as "bug_type" 
+        from {table}
+        where bug_type like '%mobile%'
+        union
+        select count(*), 'functionality' as "bug_type" 
+        from {table}
+        where bug_type like '%functionality%'
+        union
+        select count(*), 'ui-ux' as "bug_type" 
+        from {table}
+        where bug_type like '%ui-ux%'
+        union
+        select count(*), 'compatibility-performance' as "bug_type" 
+        from {table}
+        where bug_type like '%compatibility-performance%'
+        union
+        select count(*), 'network-security' as "bug_type" 
+        from {table}
+        where bug_type like '%network-security%';"""
+    else:
+        query = f"""select count(*) ,'general' as "bug_type"
+        from {table}
+        where bug_type like '%general%'
+        union 
+        select count(*), 'functionality' as "bug_type" 
+        from {table}
+        where bug_type like '%functionality%'
+        union
+        select count(*), 'ui-ux' as "bug_type" 
+        from {table}
+        where bug_type like '%ui-ux%'
+        union
+        select count(*), 'compatibility-performance' as "bug_type" 
+        from {table}
+        where bug_type like '%compatibility-performance%'
+        union
+        select count(*), 'network-security' as "bug_type" 
+        from {table}
+        where bug_type like '%network-security%';"""
+    return query
