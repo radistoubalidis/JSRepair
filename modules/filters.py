@@ -154,7 +154,7 @@ def get_changed_token_indices(token_ids_before, token_ids_after):
 
     for opcode, i1, i2, j1, j2 in sm.get_opcodes():
         if opcode != 'equal':
-            changed_indices.append((i1, i2))  # Store only the indices of changes in the before sequence
+            changed_indices.append([i1, i2])
 
     return changed_indices
 
