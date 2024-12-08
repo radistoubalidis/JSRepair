@@ -86,8 +86,6 @@ class CodeBertJS(pl.LightningModule):
         encoder_hidden_states = output.hidden_states[-1]
         encoder_output = apply_layers(encoder_hidden_states)
         
-        # Combine decoder/encoder outputs
-        encoder_output = self.dropout(encoder_output)
         return encoder_output
     
     def forward(self, batch):
