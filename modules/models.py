@@ -189,7 +189,7 @@ class CodeBertJS(pl.LightningModule):
 class CodeT5(pl.LightningModule): 
     def __init__(
         self, 
-        class_weights: np.array, 
+        class_weights: np.array = None, 
         model_dir: str = 'Salesforce/codet5-base', 
         num_classes: int = 6, 
         dropout_rate=0.1,
@@ -221,8 +221,9 @@ class CodeT5(pl.LightningModule):
         else:
             self.dropout = nn.Dropout(p=self.dropout_rate)
             self.classifier = nn.Linear(self.model.config.d_model, num_classes)
-            
-        self.class_weights = torch.tensor(class_weights)
+        
+        if class_weights is not None:
+            self.class_weights = torch.tensor(class_weights)
     
     def classifier_layers(self, output):
         def apply_layers(hidden_state):
@@ -303,8 +304,18 @@ class CodeT5(pl.LightningModule):
         self.conf_matrix_plot(all_labels,all_predictions)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=0.0001)
-        return optimizer
+        optimizer = torch.optim.AdamW(self.parameters(), lr=1e-2)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer=optimizer,
+            patience=1,
+            factor=1e-5,
+            verbose=True
+        )
+        return {
+            'optimizer': optimizer, 
+            'lr_scheduler': scheduler, 
+            'monitor': 'val_loss'    
+        }
     
     def classification_loss(self, logits, labels):
         return nn.functional.binary_cross_entropy_with_logits(
