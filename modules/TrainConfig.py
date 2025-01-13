@@ -14,7 +14,7 @@ def init_checkpoint(cpkt_path: str, model_dir: str, version: int):
         filename=f"{model_dir}_v{version}",
         save_top_k=1,
         verbose=True,
-        monitor='val_loss',
+        monitor='agg_loss',
         mode='min',
     )
 
