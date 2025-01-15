@@ -186,20 +186,23 @@ class CodeBertJS(pl.LightningModule):
         code = self.tokenizer.batch_decode(tokens, skip_special_tokens=True)[0]
         return code
     
-class CodeT5(pl.LightningModule): 
+class CodeT5(pl.LightningModule):
     def __init__(
-        self, 
-        class_weights: np.array = None, 
-        model_dir: str = 'Salesforce/codet5-base', 
-        num_classes: int = 6, 
+        self,
+        class_weights: np.array = None,
+        model_dir: str = 'Salesforce/codet5-base',
+        num_classes: int = 6,
         dropout_rate=0.1,
         with_activation: bool = False,
-        with_layer_norm: bool = False
+        with_layer_norm: bool = False,
+        lr: float = 1e-3
         ) -> None:
         super().__init__()
+        self.automatic_optimization = False
+        self.lr = lr
         self.model_dir = model_dir
         self.tokenizer = RobertaTokenizer.from_pretrained(self.model_dir)
-        self.model = T5ForConditionalGeneration.from_pretrained(self.model_dir) 
+        self.model = T5ForConditionalGeneration.from_pretrained(self.model_dir)
         self.predictions = []
         self.labels = []
         self.classes = ["mobile","functionality","ui-ux","compatibility-performance","network-security","general"] if num_classes == 6  else ["functionality","ui-ux","compatibility-performance","network-security","general"]
@@ -209,7 +212,7 @@ class CodeT5(pl.LightningModule):
         self.with_layer_norm = with_layer_norm
         if self.with_layer_norm:
             self.layer_norm = nn.LayerNorm(self.model.config.d_model)
-        
+
         self.with_activation = with_activation
         if self.with_activation:
             hiddenLayerDim = self.model.config.d_model // 2
@@ -221,114 +224,162 @@ class CodeT5(pl.LightningModule):
         else:
             self.dropout = nn.Dropout(p=self.dropout_rate)
             self.classifier = nn.Linear(self.model.config.d_model, num_classes)
-        
+
         if class_weights is not None:
             self.class_weights = torch.tensor(class_weights)
-    
+
+    def compute_grad_norm(self, loss, model):
+        """
+        Compute the gradient norm for a given loss and model.
+        """
+        self.zero_grad()
+        loss.backward(retain_graph=True)
+        grad_norm = sum(p.grad.norm(2).item() for p in model.parameters() if p.grad is not None)
+        self.zero_grad()
+        return grad_norm
+
     def classifier_layers(self, output):
         def apply_layers(hidden_state):
             # Apply layer normalization
             output = hidden_state
-            
+
             # Pooling: Average of the sequence length
             output = torch.mean(output, dim=1)
             if self.with_layer_norm:
                 output = self.layer_norm(output)
-            
+
             # Pass it through an activation function using a hidden layer
             if self.with_activation:
                 output = self.activation(self.hidden_layer(output))
             # Pass it through a dropout layer before the classifier
             output = self.dropout(output)
             return output
-        
-        # Get the last hidden state of the encoder/decoder output 
+
+        # Get the last hidden state of the encoder/decoder output
         encoder_hidden_states = output.encoder_last_hidden_state
         decoder_hidden_states = output.decoder_hidden_states[-1]
         encoder_output = apply_layers(encoder_hidden_states)
         decoder_output = apply_layers(decoder_hidden_states)
-        
+
         # Combine decoder/encoder outputs
         combined_output = torch.cat([encoder_output, decoder_output], dim=-1)
         combined_output = self.dropout(combined_output)
         return combined_output
-        
+
     def forward(self, batch):
         output = self.model(
             input_ids=batch['input_ids'],
             attention_mask=batch['attention_mask'],
             labels=batch['labels'],
-            output_hidden_states=True
+            output_hidden_states=True,
         )
-        # Get the last hidden state of the encoder output 
+        # Get the last hidden state of the encoder output
         hidden_states_output = self.classifier_layers(output)
         classification_logits = self.classifier(hidden_states_output)
         return output.loss, output.logits, classification_logits
-    
+
     def training_step(self, batch, batch_idx):
         torch.set_grad_enabled(True)
+        opt = self.optimizers()
+        opt.zero_grad()
         self.model.gradient_checkpointing_enable()
         loss, outputs, classification_logits = self.forward(batch)
         classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
-        
-        self.log("train_loss", classification_loss, prog_bar=True, logger=True)
-        return {'classification_loss' : classification_loss, 'loss': loss}
-    
+        t5_grad_norm = self.compute_grad_norm(loss, self.model)
+        class_grad_norm = self.compute_grad_norm(classification_loss, self.classifier)
+
+        # Dynamic weights
+        alpha = class_grad_norm / (t5_grad_norm + class_grad_norm + 1e-8)
+        beta = t5_grad_norm / (t5_grad_norm + class_grad_norm + 1e-8)
+
+        global_loss = alpha * loss + beta * classification_loss
+        self.manual_backward(global_loss)
+        opt.step()
+        self.log("t5_loss", loss, prog_bar=True, logger=True)
+        self.log("classification_loss", classification_loss, prog_bar=True, logger=True)
+        self.log("agg_loss", global_loss, prog_bar=True, logger=True)
+        return {'classification_loss' : classification_loss, 'loss': loss, "agg_loss" : global_loss}
+
     def validation_step(self, batch, batch_idx):
+        torch.set_grad_enabled(True)
+        opt = self.optimizers()
+        opt.zero_grad()
+        self.model.gradient_checkpointing_enable()
         loss, outputs, classification_logits = self.forward(batch)
         classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
-        self.log("val_loss", classification_loss, prog_bar=True, logger=True)
-        return {'classification_loss' : classification_loss, 'loss': loss}
-    
+        t5_grad_norm = self.compute_grad_norm(loss, self.model)
+        class_grad_norm = self.compute_grad_norm(classification_loss, self.classifier)
+
+        # Dynamic weights
+        alpha = class_grad_norm / (t5_grad_norm + class_grad_norm + 1e-8)
+        beta = t5_grad_norm / (t5_grad_norm + class_grad_norm + 1e-8)
+
+        global_loss = alpha * loss + beta * classification_loss
+        self.manual_backward(global_loss)
+        opt.step()
+
+        self.log("t5_loss", loss, prog_bar=True, logger=True)
+        self.log("classification_loss", classification_loss, prog_bar=True, logger=True)
+        self.log("agg_loss", global_loss, prog_bar=True, logger=True)
+        return {'classification_loss' : classification_loss, 'loss': loss, "agg_loss" : global_loss}
+
     def test_step(self, batch, batch_idx):
+        torch.set_grad_enabled(True)
+        opt = self.optimizers()
+        opt.zero_grad()
+        self.model.gradient_checkpointing_enable()
         loss, outputs, classification_logits = self.forward(batch)
         classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
-        self.log("test_loss", loss, prog_bar=True, logger=True)
-        return {
-            'logits': outputs, 
-            'classification_logits': classification_logits,
-            'classification_loss' : classification_loss, 
-            'loss': loss
-        }
-        
+        t5_grad_norm = self.compute_grad_norm(loss, self.model)
+        class_grad_norm = self.compute_grad_norm(classification_loss, self.classifier)
+
+        # Dynamic weights
+        alpha = class_grad_norm / (t5_grad_norm + class_grad_norm + 1e-8)
+        beta = t5_grad_norm / (t5_grad_norm + class_grad_norm + 1e-8)
+
+        global_loss = alpha * loss + beta * classification_loss
+        self.manual_backward(global_loss)
+        opt.step()
+
+        self.log("t5_loss", loss, prog_bar=True, logger=True)
+        self.log("classification_loss", classification_loss, prog_bar=True, logger=True)
+        self.log("agg_loss", global_loss, prog_bar=True, logger=True)
+        return {'classification_loss' : classification_loss, 'loss': loss, "agg_loss" : global_loss}
+
     def on_test_batch_end(self, outputs: STEP_OUTPUT, batch: Any, batch_idx: int):
         probs = torch.sigmoid(outputs['classification_logits'])
         preds = (probs > 0.5).float()
         self.generated_codes.append(self.decode_output(outputs['logits']))
         self.predictions.append(preds)
         self.labels.append(batch['class_labels'])
-    
+
     def on_test_epoch_end(self):
         all_predictions = torch.cat(self.predictions).cpu().numpy()
         all_labels = torch.cat(self.labels).cpu().numpy()
         self.conf_matrix_plot(all_labels,all_predictions)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=1e-2)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer=optimizer,
-            patience=1,
-            factor=1e-5,
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr)
+        lr_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
             verbose=True
         )
-        return {
-            'optimizer': optimizer, 
-            'lr_scheduler': scheduler, 
-            'monitor': 'val_loss'    
-        }
-    
+        return {'optimizer': optimizer, 'lr_scheduler': lr_scheduler}
+
+
     def classification_loss(self, logits, labels):
         return nn.functional.binary_cross_entropy_with_logits(
-            logits, labels.float(), pos_weight=self.class_weights.to(logits.device)
+            logits, labels.float(),
+            pos_weight=self.class_weights.to(logits.device),
             )
-    
+
     def conf_matrix_plot(self, all_labels, all_predictions):
         model_name = os.environ['MODEL_NAME']
         version = int(os.environ['VERSION'])
         metrics_path = os.environ['METRICS_PATH']
         if not os.path.exists(f"{metrics_path}/{model_name}_v{version}"):
             os.mkdir(f"{metrics_path}/{model_name}_v{version}")
-        
+
         num_classes = all_labels.shape[1]
         n_cols = 2
         n_rows = (num_classes + n_cols - 1) // n_cols
@@ -349,7 +400,7 @@ class CodeT5(pl.LightningModule):
         plt.tight_layout()
         plt.savefig(f"{metrics_path}/{model_name}_v{version}/confusion_matrices.png")
         plt.show()
-        
+
     def decode_output(self, output) -> str:
         tokens = torch.argmax(output, dim=-1)
         code = self.tokenizer.batch_decode(tokens, skip_special_tokens=True)[0]
