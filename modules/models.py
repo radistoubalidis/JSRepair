@@ -324,10 +324,6 @@ class CodeT5(pl.LightningModule):
         return {'classification_loss' : classification_loss, 'loss': loss, "agg_loss" : global_loss}
 
     def test_step(self, batch, batch_idx):
-        torch.set_grad_enabled(True)
-        opt = self.optimizers()
-        opt.zero_grad()
-        self.model.gradient_checkpointing_enable()
         loss, outputs, classification_logits = self.forward(batch)
         classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
         t5_grad_norm = self.compute_grad_norm(loss, self.model)
@@ -338,13 +334,16 @@ class CodeT5(pl.LightningModule):
         beta = t5_grad_norm / (t5_grad_norm + class_grad_norm + 1e-8)
 
         global_loss = alpha * loss + beta * classification_loss
-        self.manual_backward(global_loss)
-        opt.step()
 
         self.log("t5_loss", loss, prog_bar=True, logger=True)
         self.log("classification_loss", classification_loss, prog_bar=True, logger=True)
         self.log("agg_loss", global_loss, prog_bar=True, logger=True)
-        return {'classification_loss' : classification_loss, 'loss': loss, "agg_loss" : global_loss}
+        return {
+            'logits': outputs, 
+            'classification_logits': classification_logits,
+            'classification_loss' : classification_loss, 
+            'loss': loss
+        }
 
     def on_test_batch_end(self, outputs: STEP_OUTPUT, batch: Any, batch_idx: int):
         probs = torch.sigmoid(outputs['classification_logits'])
