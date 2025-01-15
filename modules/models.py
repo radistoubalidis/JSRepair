@@ -29,10 +29,14 @@ class CodeBertJS(pl.LightningModule):
         num_classes: int = 6, 
         dropout_rate: float =0.1,
         with_activation: bool = False,
-        with_layer_norm: bool = False
+        with_layer_norm: bool = False,
+        lr: float = 1e-3
         ) -> None:
         super().__init__()
+        self.save_hyperparameters()
+        self.automatic_optimization = False
         self.model_dir = model_dir
+        self.lr = lr
         self.encoder = RobertaForMaskedLM.from_pretrained(
                     model_dir,
                     output_hidden_states=True,
@@ -63,6 +67,16 @@ class CodeBertJS(pl.LightningModule):
             self.classifier = nn.Linear(self.encoder.config.hidden_size, num_classes)
         self.class_weights = torch.tensor(class_weights)
         self.tokenizer = tokenizer
+        
+    def compute_grad_norm(self, loss, model):
+        """
+        Compute the gradient norm for a given loss and model.
+        """
+        self.zero_grad()
+        loss.backward(retain_graph=True)
+        grad_norm = sum(p.grad.norm(2).item() for p in model.parameters() if p.grad is not None)
+        self.zero_grad()
+        return grad_norm
     
     def classifier_layers(self, output):
         def apply_layers(hidden_state):
@@ -104,28 +118,63 @@ class CodeBertJS(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         torch.set_grad_enabled(True)
         self.encoder.gradient_checkpointing_enable()
+        opt = self.optimizers()
+        opt.zero_grad()
+        self.encoder.gradient_checkpointing_enable()
         loss, outputs, classification_logits = self.forward(batch)
         classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
-
-        self.log("train_loss", classification_loss, prog_bar=True, logger=True)
-        return {'classification_loss' : classification_loss, 'loss': loss}
+        bert_grand_norm = self.compute_grad_norm(loss, self.encoder)
+        class_grand_norm = self.compute_grad_norm(classification_loss, self.classifier)
+        
+        # Dynamic Loss Weights
+        alpha = class_grand_norm / (bert_grand_norm + class_grand_norm + 1e-8)
+        beta = bert_grand_norm / (bert_grand_norm + class_grand_norm + 1e-8)
+        
+        agg_loss = alpha * loss + beta * classification_loss
+        self.manual_backward(agg_loss)
+        opt.step()
+        
+        self.log("bert_loss", loss, prog_bar=True, logger=True)
+        self.log("classification_loss", classification_loss, prog_bar=True, logger=True)
+        self.log("agg_loss", agg_loss, prog_bar=True, logger=True)
+        return {'classification_loss' : classification_loss, 'loss': loss, "agg_loss" : agg_loss}
 
     def validation_step(self, batch, batch_idx):
+        torch.set_grad_enabled(True)
+        self.encoder.gradient_checkpointing_enable()
+        opt = self.optimizers()
+        opt.zero_grad()
+        self.encoder.gradient_checkpointing_enable()
         loss, outputs, classification_logits = self.forward(batch)
         classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
-        self.log("val_loss", classification_loss, prog_bar=True, logger=True)
-        return {'classification_loss' : classification_loss, 'loss': loss}
+        bert_grand_norm = self.compute_grad_norm(loss, self.encoder)
+        class_grand_norm = self.compute_grad_norm(classification_loss, self.classifier)
+        
+        # Dynamic Loss Weights
+        alpha = class_grand_norm / (bert_grand_norm + class_grand_norm + 1e-8)
+        beta = bert_grand_norm / (bert_grand_norm + class_grand_norm + 1e-8)
+        
+        agg_loss = alpha * loss + beta * classification_loss
+        self.manual_backward(agg_loss)
+        opt.step()
+        
+        self.log("bert_loss", loss, prog_bar=True, logger=True)
+        self.log("classification_loss", classification_loss, prog_bar=True, logger=True)
+        self.log("agg_loss", agg_loss, prog_bar=True, logger=True)
+        return {'classification_loss' : classification_loss, 'loss': loss, "agg_loss" : agg_loss}
 
     def test_step(self, batch, batch_idx):
         loss, outputs, classification_logits = self.forward(batch)
         classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
-        self.log("test_loss", classification_loss, prog_bar=True, logger=True)
+        
+        self.log("bert_loss", loss, prog_bar=True, logger=True)
+        self.log("classification_loss", classification_loss, prog_bar=True, logger=True)
         return {
             'classification_loss' : classification_loss, 
             'loss': loss,
             'logits': outputs,
             'classification_logits': classification_logits
-            }
+        }
         
     def on_test_batch_end(self, outputs: STEP_OUTPUT, batch: Any, batch_idx: int):
         probs = torch.sigmoid(outputs['classification_logits'])
@@ -145,8 +194,12 @@ class CodeBertJS(pl.LightningModule):
         )
 
     def configure_optimizers(self) -> optim.Adam:
-        optimizer = optim.Adam(self.parameters(), lr=0.0001)
-        return optimizer
+        optimizer = optim.Adam(self.parameters(), lr=self.lr)
+        lr_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            verbose=True
+        )
+        return {'optimizer': optimizer, 'lr_scheduler': lr_scheduler}
 
     def classification_loss(self, logits, labels):
         return nn.functional.binary_cross_entropy_with_logits(
@@ -198,6 +251,7 @@ class CodeT5(pl.LightningModule):
         lr: float = 1e-3
         ) -> None:
         super().__init__()
+        self.save_hyperparameters()
         self.automatic_optimization = False
         self.lr = lr
         self.model_dir = model_dir
@@ -206,7 +260,6 @@ class CodeT5(pl.LightningModule):
         self.predictions = []
         self.labels = []
         self.classes = ["mobile","functionality","ui-ux","compatibility-performance","network-security","general"] if num_classes == 6  else ["functionality","ui-ux","compatibility-performance","network-security","general"]
-        self.save_hyperparameters()
         self.generated_codes = []
         self.dropout_rate = dropout_rate
         self.with_layer_norm = with_layer_norm
@@ -355,7 +408,6 @@ class CodeT5(pl.LightningModule):
             verbose=True
         )
         return {'optimizer': optimizer, 'lr_scheduler': lr_scheduler}
-
 
     def classification_loss(self, logits, labels):
         return nn.functional.binary_cross_entropy_with_logits(
