@@ -8,7 +8,7 @@ from transformers import RobertaTokenizer
 
 
 
-def init_checkpoint(cpkt_path: str, model_dir: str, version: int, targetMetric: str):
+def init_checkpoint(cpkt_path: str, model_dir: str, version: int, targetMetric: str = 'val_auxilary_loss'):
     return pl.callbacks.ModelCheckpoint(
         dirpath=cpkt_path,
         filename=f"{model_dir}_v{version}",

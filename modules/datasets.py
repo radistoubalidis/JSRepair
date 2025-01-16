@@ -4,15 +4,15 @@ class CodeBertDataset(torch.utils.data.Dataset):
     def __init__(self, encodings, gt_input_ids, class_labels):
         self.input_ids = encodings.input_ids
         self.attention_mask = encodings.attention_mask
-        self.gt_input_ids = gt_input_ids
         self.class_labels = class_labels
+        self.gt_input_ids = gt_input_ids
 
     def __getitem__(self, idx):
         item = {
             'input_ids': self.input_ids[idx],
             'attention_mask': self.attention_mask[idx],
-            'gt_input_ids': self.gt_input_ids[idx],
-            'class_labels': self.class_labels[idx]
+            'class_labels': self.class_labels[idx],
+            'gt_input_ids': self.gt_input_ids[idx]
         }
         return item
 

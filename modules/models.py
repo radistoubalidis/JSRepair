@@ -67,6 +67,7 @@ class CodeBertJS(pl.LightningModule):
             self.classifier = nn.Linear(self.encoder.config.hidden_size, num_classes)
         self.class_weights = torch.tensor(class_weights)
         self.tokenizer = tokenizer
+        self.codebert_loss = nn.CrossEntropyLoss()
         
     def compute_grad_norm(self, loss, model):
         """
@@ -106,13 +107,14 @@ class CodeBertJS(pl.LightningModule):
         encoder_output = self.encoder(
             input_ids=batch['input_ids'],
             attention_mask=batch['attention_mask'],
-            labels=batch['gt_input_ids'],
             output_hidden_states=True
         )
+        encoder_loss = self.codebert_loss(encoder_output.logits.view(-1, encoder_output.logits.size(-1)),batch['gt_input_ids'].view(-1))
+
         hidden_states_output = self.classifier_layers(encoder_output)
 
         classification_logits = self.classifier(hidden_states_output)
-        return encoder_output.loss, encoder_output.logits, classification_logits
+        return encoder_loss, encoder_output.logits, classification_logits
 
     def training_step(self, batch, batch_idx):
         torch.set_grad_enabled(True)
@@ -129,46 +131,44 @@ class CodeBertJS(pl.LightningModule):
         alpha = class_grand_norm / (bert_grand_norm + class_grand_norm + 1e-8)
         beta = bert_grand_norm / (bert_grand_norm + class_grand_norm + 1e-8)
         
-        agg_loss = alpha * loss + beta * classification_loss
-        self.manual_backward(agg_loss)
+        auxilary_loss = alpha * loss + beta * classification_loss
+        self.manual_backward(auxilary_loss)
         opt.step()
         
         self.log("bert_loss", loss, prog_bar=True, logger=True)
         self.log("classification_loss", classification_loss, prog_bar=True, logger=True)
-        self.log("agg_loss", agg_loss, prog_bar=True, logger=True)
-        return {'classification_loss' : classification_loss, 'loss': loss, "agg_loss" : agg_loss}
+        self.log("auxilary_loss", auxilary_loss, prog_bar=True, logger=True)
+        return {'classification_loss' : classification_loss, 'loss': loss, "auxilary_loss" : auxilary_loss}
 
     def validation_step(self, batch, batch_idx):
-        torch.set_grad_enabled(True)
-        self.encoder.gradient_checkpointing_enable()
-        opt = self.optimizers()
-        opt.zero_grad()
-        self.encoder.gradient_checkpointing_enable()
         loss, outputs, classification_logits = self.forward(batch)
         classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
-        bert_grand_norm = self.compute_grad_norm(loss, self.encoder)
-        class_grand_norm = self.compute_grad_norm(classification_loss, self.classifier)
         
-        # Dynamic Loss Weights
-        alpha = class_grand_norm / (bert_grand_norm + class_grand_norm + 1e-8)
-        beta = bert_grand_norm / (bert_grand_norm + class_grand_norm + 1e-8)
+        # Static weights for validation
+        alpha = 0.65
+        beta = 0.35
         
-        val_agg_loss = alpha * loss + beta * classification_loss
-        self.manual_backward(val_agg_loss)
-        opt.step()
+        val_auxilary_loss = alpha * loss + beta * classification_loss
         
         self.log("bert_loss", loss, prog_bar=True, logger=True)
         self.log("classification_loss", classification_loss, prog_bar=True, logger=True)
-        self.log("val_agg_loss", val_agg_loss, prog_bar=True, logger=True)
-        return {'classification_loss' : classification_loss, 'loss': loss, "agg_loss" : val_agg_loss}
+        self.log("val_auxilary_loss", val_auxilary_loss, prog_bar=True, logger=True)
+        return {'classification_loss' : classification_loss, 'loss': loss, "auxilary_loss" : val_auxilary_loss}
 
     def test_step(self, batch, batch_idx):
         loss, outputs, classification_logits = self.forward(batch)
         classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
         
+        # Static weights for validation
+        alpha = 0.65
+        beta = 0.35
+        
+        auxilary_loss = alpha * loss + beta * classification_loss
         self.log("bert_loss", loss, prog_bar=True, logger=True)
         self.log("classification_loss", classification_loss, prog_bar=True, logger=True)
+        self.log("auxilary_loss", auxilary_loss, prog_bar=True, logger=True)
         return {
+            'auxilary_loss': auxilary_loss,
             'classification_loss' : classification_loss, 
             'loss': loss,
             'logits': outputs,
