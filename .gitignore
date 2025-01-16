@@ -18,6 +18,6 @@ __pycache__
 commitpack-datasets.db
 humanevalpack.db
 package*.json
-dokimes.ipynb
+dokimes*.ipynb
 tree-sitter-javascript
 my-languages.so

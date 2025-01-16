@@ -113,7 +113,6 @@ class CodeBertJS(pl.LightningModule):
 
         classification_logits = self.classifier(hidden_states_output)
         return encoder_output.loss, encoder_output.logits, classification_logits
-        
 
     def training_step(self, batch, batch_idx):
         torch.set_grad_enabled(True)
@@ -154,14 +153,14 @@ class CodeBertJS(pl.LightningModule):
         alpha = class_grand_norm / (bert_grand_norm + class_grand_norm + 1e-8)
         beta = bert_grand_norm / (bert_grand_norm + class_grand_norm + 1e-8)
         
-        agg_loss = alpha * loss + beta * classification_loss
-        self.manual_backward(agg_loss)
+        val_agg_loss = alpha * loss + beta * classification_loss
+        self.manual_backward(val_agg_loss)
         opt.step()
         
         self.log("bert_loss", loss, prog_bar=True, logger=True)
         self.log("classification_loss", classification_loss, prog_bar=True, logger=True)
-        self.log("agg_loss", agg_loss, prog_bar=True, logger=True)
-        return {'classification_loss' : classification_loss, 'loss': loss, "agg_loss" : agg_loss}
+        self.log("val_agg_loss", val_agg_loss, prog_bar=True, logger=True)
+        return {'classification_loss' : classification_loss, 'loss': loss, "agg_loss" : val_agg_loss}
 
     def test_step(self, batch, batch_idx):
         loss, outputs, classification_logits = self.forward(batch)
@@ -367,14 +366,14 @@ class CodeT5(pl.LightningModule):
         alpha = class_grad_norm / (t5_grad_norm + class_grad_norm + 1e-8)
         beta = t5_grad_norm / (t5_grad_norm + class_grad_norm + 1e-8)
 
-        global_loss = alpha * loss + beta * classification_loss
-        self.manual_backward(global_loss)
+        val_agg_loss = alpha * loss + beta * classification_loss
+        self.manual_backward(val_agg_loss)
         opt.step()
 
         self.log("t5_loss", loss, prog_bar=True, logger=True)
         self.log("classification_loss", classification_loss, prog_bar=True, logger=True)
-        self.log("agg_loss", global_loss, prog_bar=True, logger=True)
-        return {'classification_loss' : classification_loss, 'loss': loss, "agg_loss" : global_loss}
+        self.log("val_agg_loss", val_agg_loss, prog_bar=True, logger=True)
+        return {'classification_loss' : classification_loss, 'loss': loss, "val_agg_loss" : val_agg_loss}
 
     def test_step(self, batch, batch_idx):
         loss, outputs, classification_logits = self.forward(batch)

@@ -8,13 +8,13 @@ from transformers import RobertaTokenizer
 
 
 
-def init_checkpoint(cpkt_path: str, model_dir: str, version: int):
+def init_checkpoint(cpkt_path: str, model_dir: str, version: int, targetMetric: str):
     return pl.callbacks.ModelCheckpoint(
         dirpath=cpkt_path,
         filename=f"{model_dir}_v{version}",
         save_top_k=1,
         verbose=True,
-        monitor='agg_loss',
+        monitor=targetMetric,
         mode='min',
     )
 
@@ -24,7 +24,7 @@ def init_logger(model_dir: str, version: int, log_path: int):
         name=f"{model_dir}_v{version}",
     )
 
-def Trainer(checkpoint: pl.callbacks.ModelCheckpoint, logger: pl.loggers.CSVLogger, num_epochs: int, debug=False):
+def Trainer(checkpoint: pl.callbacks.ModelCheckpoint, logger: pl.loggers.CSVLogger, num_epochs: int, debug=False, precision: str = '32-true'):
     return pl.Trainer(
         callbacks=checkpoint,
         max_epochs=num_epochs,
@@ -33,7 +33,7 @@ def Trainer(checkpoint: pl.callbacks.ModelCheckpoint, logger: pl.loggers.CSVLogg
         devices=1,
         fast_dev_run=debug,
         inference_mode=False,
-        precision='16-mixed'
+        precision=precision
     )
     
 def read_hparams(json_path: str, decoder_start_token_id: int) -> dict:
