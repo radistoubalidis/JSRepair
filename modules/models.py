@@ -150,10 +150,10 @@ class CodeBertJS(pl.LightningModule):
         
         val_auxilary_loss = alpha * loss + beta * classification_loss
         
-        self.log("bert_loss", loss, prog_bar=True, logger=True)
-        self.log("classification_loss", classification_loss, prog_bar=True, logger=True)
+        self.log("val_bert_loss", loss, prog_bar=True, logger=True)
+        self.log("val_classification_loss", classification_loss, prog_bar=True, logger=True)
         self.log("val_auxilary_loss", val_auxilary_loss, prog_bar=True, logger=True)
-        return {'classification_loss' : classification_loss, 'loss': loss, "auxilary_loss" : val_auxilary_loss}
+        return {'val_classification_loss' : classification_loss, 'val_loss': loss, "val_auxilary_loss" : val_auxilary_loss}
 
     def test_step(self, batch, batch_idx):
         loss, outputs, classification_logits = self.forward(batch)
@@ -344,36 +344,27 @@ class CodeT5(pl.LightningModule):
         alpha = class_grad_norm / (t5_grad_norm + class_grad_norm + 1e-8)
         beta = t5_grad_norm / (t5_grad_norm + class_grad_norm + 1e-8)
 
-        global_loss = alpha * loss + beta * classification_loss
-        self.manual_backward(global_loss)
+        auxilary_loss = alpha * loss + beta * classification_loss
+        self.manual_backward(auxilary_loss)
         opt.step()
         self.log("t5_loss", loss, prog_bar=True, logger=True)
         self.log("classification_loss", classification_loss, prog_bar=True, logger=True)
-        self.log("agg_loss", global_loss, prog_bar=True, logger=True)
-        return {'classification_loss' : classification_loss, 'loss': loss, "agg_loss" : global_loss}
+        self.log("auxilary_loss", auxilary_loss, prog_bar=True, logger=True)
+        return {'classification_loss' : classification_loss, 'loss': loss, "auxilary_loss" : auxilary_loss}
 
     def validation_step(self, batch, batch_idx):
-        torch.set_grad_enabled(True)
-        opt = self.optimizers()
-        opt.zero_grad()
-        self.model.gradient_checkpointing_enable()
         loss, outputs, classification_logits = self.forward(batch)
         classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
-        t5_grad_norm = self.compute_grad_norm(loss, self.model)
-        class_grad_norm = self.compute_grad_norm(classification_loss, self.classifier)
 
-        # Dynamic weights
-        alpha = class_grad_norm / (t5_grad_norm + class_grad_norm + 1e-8)
-        beta = t5_grad_norm / (t5_grad_norm + class_grad_norm + 1e-8)
+        # Static weights for validation
+        alpha = 0.65
+        beta = 0.35
 
-        val_agg_loss = alpha * loss + beta * classification_loss
-        self.manual_backward(val_agg_loss)
-        opt.step()
-
-        self.log("t5_loss", loss, prog_bar=True, logger=True)
-        self.log("classification_loss", classification_loss, prog_bar=True, logger=True)
-        self.log("val_agg_loss", val_agg_loss, prog_bar=True, logger=True)
-        return {'classification_loss' : classification_loss, 'loss': loss, "val_agg_loss" : val_agg_loss}
+        val_auxilary_loss = alpha * loss + beta * classification_loss
+        self.log("val_t5_loss", loss, prog_bar=True, logger=True)
+        self.log("val_classification_loss", classification_loss, prog_bar=True, logger=True)
+        self.log("val_auxilary_loss", val_auxilary_loss, prog_bar=True, logger=True)
+        return {'val_classification_loss' : classification_loss, 'val_loss': loss, "val_auxilary_loss" : val_auxilary_loss}
 
     def test_step(self, batch, batch_idx):
         loss, outputs, classification_logits = self.forward(batch)
