@@ -12,7 +12,7 @@ from transformers import (
 import os
 import numpy as np
 import torch
-import pytorch_lightning as pl
+from lightning import LightningModule
 import torch.optim as optim
 import torch.nn as nn
 import matplotlib.pyplot as plt
@@ -20,7 +20,7 @@ import seaborn as sns
 
 
 
-class CodeBertJS(pl.LightningModule):
+class CodeBertJS(LightningModule):
     def __init__(
         self, 
         tokenizer: RobertaTokenizer,
@@ -238,7 +238,7 @@ class CodeBertJS(pl.LightningModule):
         code = self.tokenizer.batch_decode(tokens, skip_special_tokens=True)[0]
         return code
     
-class CodeT5(pl.LightningModule):
+class CodeT5(LightningModule):
     def __init__(
         self,
         class_weights: np.array = None,

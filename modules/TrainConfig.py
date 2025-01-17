@@ -20,8 +20,7 @@ def init_checkpoint(cpkt_path: str, model_dir: str, version: int, targetMetric: 
         save_top_k=1,
         verbose=True,
         monitor=targetMetric,
-        mode='min',
-        use_reentrant=True
+        mode='min'
     )
 
 def init_logger(model_dir: str, version: int, log_path: int):
@@ -30,15 +29,17 @@ def init_logger(model_dir: str, version: int, log_path: int):
         name=f"{model_dir}_v{version}",
     )
     
-def early_stop(**kwargs) -> EarlyStopping:
+def early_stop(targetMetric = 'val_auxillary_input') -> EarlyStopping:
     return EarlyStopping(
-        monitor=kwargs.get('metric'),
+        monitor=targetMetric,
         mode='min',
-        min_delta=kwargs.get('min_delta'),
+        min_delta=3e-2,
         check_finite=True,
-        patience=kwargs.get('patience'),
+        patience=3,
         strict=True,
-        **kwargs
+        divergence_threshold=False,
+        check_on_train_epoch_end=True,
+        log_rank_zero_only=False
     )
     
 
@@ -47,20 +48,8 @@ def Trainer(
         num_epochs: int, debug=False, precision: str = '32-true',
         targetMetric: str = 'val_auxilary_loss'
     ):
-    if debug is True:
-        callbacks = checkpoint
-    else:
-        callbacks = [
-            early_stop({
-                'metric': targetMetric,
-                'min_delta': 3e-2,
-                'patience': 3,
-                'divergence_threshold': False,
-                'check_on_train_epoch_end': True,
-                'log_rank_zero_only': False
-            }),
-            checkpoint
-        ]
+    
+    callbacks = [early_stop(),checkpoint]
     return lTrainer(
         callbacks=callbacks,
         max_epochs=num_epochs,
