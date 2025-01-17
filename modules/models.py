@@ -67,7 +67,7 @@ class CodeBertJS(LightningModule):
             self.classifier = nn.Linear(self.encoder.config.hidden_size, num_classes)
         self.class_weights = torch.tensor(class_weights)
         self.tokenizer = tokenizer
-        self.codebert_loss = nn.CrossEntropyLoss()
+        self.codebert_loss = nn.CrossEntropyLoss(ignore_index=self.tokenizer.pad_token_id)
         
     def compute_grad_norm(self, loss, model):
         """

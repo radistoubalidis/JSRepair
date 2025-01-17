@@ -37,9 +37,6 @@ def early_stop(targetMetric = 'val_auxillary_input') -> EarlyStopping:
         check_finite=True,
         patience=3,
         strict=True,
-        divergence_threshold=False,
-        check_on_train_epoch_end=True,
-        log_rank_zero_only=False
     )
     
 
