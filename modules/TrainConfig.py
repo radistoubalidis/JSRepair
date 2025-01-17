@@ -1,32 +1,68 @@
+from gc import callbacks
 import json
 import os
 import random
 import sys
-import pytorch_lightning as pl
 import torch
 from transformers import RobertaTokenizer
+from lightning.pytorch.callbacks.early_stopping import EarlyStopping
+from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning import Trainer as lTrainer
+from lightning.pytorch.loggers import CSVLogger
+
 
 
 
 def init_checkpoint(cpkt_path: str, model_dir: str, version: int, targetMetric: str = 'val_auxilary_loss'):
-    return pl.callbacks.ModelCheckpoint(
+    return ModelCheckpoint(
         dirpath=cpkt_path,
         filename=f"{model_dir}_v{version}",
         save_top_k=1,
         verbose=True,
         monitor=targetMetric,
         mode='min',
+        use_reentrant=True
     )
 
 def init_logger(model_dir: str, version: int, log_path: int):
-    return pl.loggers.CSVLogger(
+    return CSVLogger(
         save_dir=log_path,
         name=f"{model_dir}_v{version}",
     )
+    
+def early_stop(**kwargs) -> EarlyStopping:
+    return EarlyStopping(
+        monitor=kwargs.get('metric'),
+        mode='min',
+        min_delta=kwargs.get('min_delta'),
+        check_finite=True,
+        patience=kwargs.get('patience'),
+        strict=True,
+        **kwargs
+    )
+    
 
-def Trainer(checkpoint: pl.callbacks.ModelCheckpoint, logger: pl.loggers.CSVLogger, num_epochs: int, debug=False, precision: str = '32-true'):
-    return pl.Trainer(
-        callbacks=checkpoint,
+def Trainer(
+        checkpoint: ModelCheckpoint, logger: CSVLogger,
+        num_epochs: int, debug=False, precision: str = '32-true',
+        targetMetric: str = 'val_auxilary_loss'
+    ):
+    if debug is True:
+        callbacks = checkpoint
+    else:
+        callbacks = [
+            early_stop({
+                'metric': targetMetric,
+                'min_delta': 3e-2,
+                'patience': 3,
+                'divergence_threshold': False,
+                'check_on_train_epoch_end': True,
+                'log_rank_zero_only': False
+            }),
+            checkpoint
+        ]
+    return lTrainer(
+        callbacks=callbacks,
         max_epochs=num_epochs,
         logger=logger,
         accelerator='gpu' if torch.cuda.is_available() else 'cpu',

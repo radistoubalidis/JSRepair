@@ -21,3 +21,5 @@ package*.json
 dokimes*.ipynb
 tree-sitter-javascript
 my-languages.so
+logs
+commitpackft_classified_train.csv
