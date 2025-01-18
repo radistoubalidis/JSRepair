@@ -29,7 +29,7 @@ def init_logger(model_dir: str, version: int, log_path: int):
         name=f"{model_dir}_v{version}",
     )
     
-def early_stop(targetMetric = 'val_auxillary_input') -> EarlyStopping:
+def early_stop(targetMetric = 'val_auxilary_loss') -> EarlyStopping:
     return EarlyStopping(
         monitor=targetMetric,
         mode='min',
@@ -42,13 +42,12 @@ def early_stop(targetMetric = 'val_auxillary_input') -> EarlyStopping:
 
 def Trainer(
         checkpoint: ModelCheckpoint, logger: CSVLogger,
-        num_epochs: int, debug=False, precision: str = '32-true',
+        num_epochs: int, debug=False, precision: str = '16-mixed',
         targetMetric: str = 'val_auxilary_loss'
     ):
     
-    callbacks = [early_stop(),checkpoint]
     return lTrainer(
-        callbacks=callbacks,
+        callbacks=[early_stop(targetMetric),checkpoint],
         max_epochs=num_epochs,
         logger=logger,
         accelerator='gpu' if torch.cuda.is_available() else 'cpu',
