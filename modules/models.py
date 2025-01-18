@@ -67,7 +67,7 @@ class CodeBertJS(LightningModule):
             self.classifier = nn.Linear(self.encoder.config.hidden_size, num_classes)
         self.class_weights = torch.tensor(class_weights)
         self.tokenizer = tokenizer
-        self.codebert_loss = nn.CrossEntropyLoss(ignore_index=self.tokenizer.pad_token_id)
+        self.codebert_loss = nn.CrossEntropyLoss()
         
     def compute_grad_norm(self, loss, model):
         """
@@ -178,7 +178,8 @@ class CodeBertJS(LightningModule):
     def on_test_batch_end(self, outputs: STEP_OUTPUT, batch: Any, batch_idx: int):
         probs = torch.sigmoid(outputs['classification_logits'])
         preds = (probs > 0.5).float()
-        self.generated_codes.append(self.decode_output(outputs['logits']))
+        generated_code = self.decode_output(outputs['logits'])
+        self.generated_codes.append(generated_code)
         self.predictions.append(preds)
         self.labels.append(batch['class_labels'])
     
@@ -382,7 +383,8 @@ class CodeT5(LightningModule):
     def on_test_batch_end(self, outputs: STEP_OUTPUT, batch: Any, batch_idx: int):
         probs = torch.sigmoid(outputs['classification_logits'])
         preds = (probs > 0.5).float()
-        self.generated_codes.append(self.decode_output(outputs['logits']))
+        generated_code = self.decode_output(outputs['logits'])
+        self.generated_codes.append(generated_code)
         self.predictions.append(preds)
         self.labels.append(batch['class_labels'])
 
