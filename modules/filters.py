@@ -11,7 +11,74 @@ from sklearn.model_selection import train_test_split
 from difflib import SequenceMatcher
 from typing import List
 from transformers import RobertaTokenizer
+import random
 
+def mask(buggy_code: str, correct_code: str, tokenizer: RobertaTokenizer) -> str:
+    """Η συναρτηση χρησιμοποιεί τον tokenizer του μοντελου,
+    για να μετατρέψει τον κωδικα σε μια λιστα απο word tokens
+    πανω στις οποιες εφαρμοζεται συγκριση χαρακτηρα προς χαρακτηρα
+    για να βρεθουν τα σημεία στην λιστα που βρισκονταιοι διαφορες τους,
+    ώστε να χρησιμοποιηθουν τα συγκεκριμενα στοιχεια της λιστας στον μηχανισμο
+    αποκρυψης.
+    Σεναριο 1: Αν το συνολο των word tokens που αλλαξαν δεν ειναι
+    μεγαλύτερο απο το 1/4 του συνολου των word tokens τοτε εφαρμοζεται
+    το στοιχειο μασκα του tokenizer στα word token που αλλαξαν.
+    Σεναριο 2: Αν το συνολο των word tokens που αλλαξαν ειναι
+    μεγαλύτερο απο το 1/4 του συνολου των word tokens τοτε εφαρμοζεται η μασκα στα word tokens με τυχαιο τροπο.
+    Επιστρέφεται ο κώδικας σε μορφη string αφοτου εφαρμόστηκε η τεχνικη
+    αποκρυψης στα επιλεγμενα στοιχεια.
+
+    Αν σε ολα τα δειγματα εφαρμοζοταν η τεχνικη αποκρυψης
+    με βαση τις διαφορες στον κωδικα θα δημιουργοταν θορυβος
+    στο dataset με πολλα outlier δειγματα (π.χ. σε ενα δειγμα που
+    υπήρχαν πολλές γραμμές με σχόλια και αφαιρεθηκαν, θα δημιουργοταν
+    ενα δειγμα που το συνολο των word token του θα ηταν το στοιχείο αποκρυψης)
+
+    Args:
+        buggy_code (str): code before commit
+        correct_code (str): code after commit
+        tokenizer (RobertaTokenizer): codebert's tokenizer
+
+    Returns:
+        _type_: str
+    """
+    buggy_tokens = tokenizer.tokenize(buggy_code)
+    correct_tokens = tokenizer.tokenize(correct_code)
+    indices = get_changed_token_indices(buggy_tokens, correct_tokens)
+    masked_buggy_tokens = buggy_tokens
+    if len(indices) <= len(buggy_tokens) / 4:
+        for i1, i2 in indices:
+            if abs(i2-i1) == 0:
+                masked_buggy_tokens[i1-1] = tokenizer.mask_token
+            if abs(i2-i1) == 1:
+                masked_buggy_tokens[i1] = tokenizer.mask_token
+            else:
+                for idx in range(i1,i2):
+                    masked_buggy_tokens[idx] = tokenizer.mask_token
+    else:
+        num_random_masks = random.randint(1, int(len(buggy_tokens) / 4))
+        random_indices = random.sample(range(1,len(buggy_tokens)), num_random_masks)
+        for ri in random_indices:
+            masked_buggy_tokens[ri] = tokenizer.mask_token
+    return tokenizer.convert_tokens_to_string(masked_buggy_tokens)
+
+
+def count_comment_lines(sample: str) -> int:
+    comment_blocks = []
+    start_index = -1
+    for i, line in enumerate(sample.splitlines()):
+        if line.strip().startswith('/*'):
+            start_index = i
+        elif line.strip().endswith('*/'):
+            comment_blocks.append([start_index, i])
+            start_index = -1
+
+    comment_lines_count = sum([c[1]-c[0] for c in comment_blocks])
+
+    for i, line in enumerate(sample.splitlines()):
+        if line.strip().startswith('//'):
+            comment_lines_count += 1
+    return comment_lines_count
 
 def preprocess_text(text: str, get_tokens: bool = True):
     # Convert to lowercase
