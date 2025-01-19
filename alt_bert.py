@@ -46,10 +46,10 @@ class CodeBertJS(LightningModule):
     def __init__(
         self, 
         class_weights: np.array = None, 
-        tokenizer: RobertaTokenizer = RobertaTokenizer.from_pretrained('microsoft/codebert-base-mlm'),
-        model_dir: str = 'microsoft/codebert-base-mlm', 
+        tokenizer = RobertaTokenizer.from_pretrained(HF_DIR),
+        model_dir: str = HF_DIR, 
         num_classes: int = 6, 
-        dropout_rate: float =0.1,
+        dropout_rate: float = 0.3,
         with_activation: bool = False,
         with_layer_norm: bool = False,
         lr: float = 1e-3
