@@ -62,7 +62,7 @@ class CodeBertJS(LightningModule):
         self.codebert = RobertaForMaskedLM.from_pretrained(
                     model_dir,
                     output_hidden_states=True,
-                    output_attentions=True,
+                    # output_attentions=True,
                     num_beams=5,
                     num_beam_groups=2,
                     return_dict=True,
