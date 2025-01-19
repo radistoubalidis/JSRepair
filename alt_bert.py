@@ -22,7 +22,7 @@ from modules.filters import add_labels, mask, count_comment_lines, compute_diffs
 from sklearn.model_selection import train_test_split
 from modules.TrainConfig import Trainer, init_checkpoint, init_logger
 
-HF_DIR = 'microsoft/codebert-base-mlm'
+HF_DIR = 'microsoft/codebert-base'
 
 class CodeBertJSDataset(Dataset):
     def __init__(self, encodings, labels, class_labels):
@@ -267,8 +267,11 @@ def load_ds(tokenizer: RobertaTokenizer, debug = False, classLabels: dict = {
     "network-security" : 0.,
     "general": 0.
 }):
+    db_path = 'commitpack-datasets.db' if os.path.exists('commitpack-datasets.db') else '/content/drive/MyDrive/Thesis/commitpack-datasets.db'
     con = sqlite3.connect('commitpack-datasets.db')
     ds_df = pd.read_sql_query("select * from commitpackft_classified_train",con)
+    if not os.path.exists(db_path):
+        raise FileNotFoundError('sqlite3 path doesnt exist.')
     ds_df['class_labels'] = ds_df['bug_type'].apply(lambda bT: add_labels(bT.split(','), classLabels))
     ds_df = ds_df[ds_df['bug_type'] != 'mobile']
     ds_df = ds_df[ds_df['old_contents'].str.len() > 0]
