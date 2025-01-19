@@ -37,7 +37,7 @@ class CodeBertJS(LightningModule):
         self.automatic_optimization = False
         self.model_dir = model_dir
         self.lr = lr
-        self.encoder = RobertaForMaskedLM.from_pretrained(
+        self.codebert = RobertaForMaskedLM.from_pretrained(
                     model_dir,
                     output_hidden_states=True,
                     output_attentions=True,
@@ -49,25 +49,24 @@ class CodeBertJS(LightningModule):
         self.dropout_rate = dropout_rate
         self.with_layer_norm = with_layer_norm
         if self.with_layer_norm:
-            self.layer_norm = nn.LayerNorm(self.encoder.config.hidden_size)
+            self.layer_norm = nn.LayerNorm(self.codebert.config.hidden_size)
         
         self.predictions = []
         self.labels = []
         self.generated_codes = []
         self.with_activation = with_activation
         if self.with_activation:
-            hiddenLayerDim = self.encoder.config.hidden_size
+            hiddenLayerDim = self.codebert.config.hidden_size
             classifierInFeatures = hiddenLayerDim
-            self.hidden_layer = nn.Linear(self.encoder.config.hidden_size, hiddenLayerDim)
+            self.hidden_layer = nn.Linear(self.codebert.config.hidden_size, hiddenLayerDim)
             self.activation = nn.ReLU()
             self.dropout = nn.Dropout(p=self.dropout_rate)
             self.classifier = nn.Linear(classifierInFeatures, num_classes)
         else:
             self.dropout = nn.Dropout(p=self.dropout_rate)
-            self.classifier = nn.Linear(self.encoder.config.hidden_size, num_classes)
+            self.classifier = nn.Linear(self.codebert.config.hidden_size, num_classes)
         self.class_weights = torch.tensor(class_weights)
         self.tokenizer = tokenizer
-        self.codebert_loss = nn.CrossEntropyLoss()
         
     def compute_grad_norm(self, loss, model):
         """
@@ -104,27 +103,26 @@ class CodeBertJS(LightningModule):
         return encoder_output
     
     def forward(self, batch):
-        encoder_output = self.encoder(
+        codebert_output = self.codebert(
             input_ids=batch['input_ids'],
             attention_mask=batch['attention_mask'],
-            output_hidden_states=True
+            output_hidden_states=True,
+            labels=batch['gt_input_ids']
         )
-        encoder_loss = self.codebert_loss(encoder_output.logits.view(-1, encoder_output.logits.size(-1)),batch['gt_input_ids'].view(-1))
-
-        hidden_states_output = self.classifier_layers(encoder_output)
+        hidden_states_output = self.classifier_layers(codebert_output)
 
         classification_logits = self.classifier(hidden_states_output)
-        return encoder_loss, encoder_output.logits, classification_logits
+        return codebert_output.loss, codebert_output.logits, classification_logits
 
     def training_step(self, batch, batch_idx):
         torch.set_grad_enabled(True)
-        self.encoder.gradient_checkpointing_enable()
+        self.codebert.gradient_checkpointing_enable()
         opt = self.optimizers()
         opt.zero_grad()
-        self.encoder.gradient_checkpointing_enable()
-        loss, outputs, classification_logits = self.forward(batch)
+        self.codebert.gradient_checkpointing_enable()
+        loss, logits, classification_logits = self.forward(batch)
         classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
-        bert_grand_norm = self.compute_grad_norm(loss, self.encoder)
+        bert_grand_norm = self.compute_grad_norm(loss, self.codebert)
         class_grand_norm = self.compute_grad_norm(classification_loss, self.classifier)
         
         # Dynamic Loss Weights
