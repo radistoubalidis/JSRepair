@@ -268,7 +268,7 @@ def load_ds(tokenizer: RobertaTokenizer, debug = False, classLabels: dict = {
     "general": 0.
 }):
     db_path = 'commitpack-datasets.db' if os.path.exists('commitpack-datasets.db') else '/content/drive/MyDrive/Thesis/commitpack-datasets.db'
-    con = sqlite3.connect('commitpack-datasets.db')
+    con = sqlite3.connect(db_path)
     ds_df = pd.read_sql_query("select * from commitpackft_classified_train",con)
     if not os.path.exists(db_path):
         raise FileNotFoundError('sqlite3 path doesnt exist.')
