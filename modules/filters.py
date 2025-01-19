@@ -13,6 +13,14 @@ from typing import List
 from transformers import RobertaTokenizer
 import random
 
+
+def compute_diffs(sample: dict, dmp):
+    # Compute the differences
+    diffs = dmp.diff_main(sample['old_contents'], sample['new_contents'])
+    dmp.diff_cleanupSemantic(diffs)
+    # Count the changes
+    return sum(1 for diff in diffs if diff[0] == 1)
+
 def mask(buggy_code: str, correct_code: str, tokenizer: RobertaTokenizer) -> str:
     """Η συναρτηση χρησιμοποιεί τον tokenizer του μοντελου,
     για να μετατρέψει τον κωδικα σε μια λιστα απο word tokens
