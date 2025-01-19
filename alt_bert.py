@@ -162,13 +162,6 @@ class CodeBertJS(LightningModule):
         self.log("classification_loss", classification_loss, prog_bar=True, logger=True)
         self.log("auxilary_loss", auxilary_loss, prog_bar=True, logger=True)
         return {'bert_logits': logits, 'classification_logits': classification_logits, 'classification_loss' : classification_loss, 'loss': loss, "auxilary_loss" : auxilary_loss}
-    
-    def on_train_batch_end(self, outputs, batch, batch_idx):
-        probs = torch.argmax(outputs['bert_logits'], dim=-1)
-        codes = self.tokenizer.batch_decode(probs, skip_special_tokens=True)
-        raise ValueError(codes)
-        
-        
 
     def validation_step(self, batch, batch_idx):
         loss, outputs, classification_logits = self.forward(batch)
