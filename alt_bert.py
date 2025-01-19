@@ -202,6 +202,14 @@ class CodeBertJS(LightningModule):
         all_predictions = torch.cat(self.predictions).cpu().numpy()
         all_labels = torch.cat(self.labels).cpu().numpy()
         self.conf_matrix_plot(all_labels,all_predictions)
+        
+    def on_test_batch_end(self, outputs: STEP_OUTPUT, batch: Any, batch_idx: int):
+        probs = torch.sigmoid(outputs['classification_logits'])
+        preds = (probs > 0.5).float()
+        generated_code = self.decode_output(outputs['logits'])
+        self.generated_codes.append(generated_code)
+        self.predictions.append(preds)
+        self.labels.append(batch['class_labels'])
     
     def predict_step(self, input_ids, gt_input_ids):
         return self.model(
