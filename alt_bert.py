@@ -22,7 +22,7 @@ from modules.filters import add_labels, mask, count_comment_lines, compute_diffs
 from sklearn.model_selection import train_test_split
 from modules.TrainConfig import Trainer, init_checkpoint, init_logger
 
-HF_DIR = 'microsoft/codebert-base'
+HF_DIR = 'microsoft/codebert-base-mlm'
 
 class CodeBertJSDataset(Dataset):
     def __init__(self, encodings, labels, class_labels):
@@ -35,7 +35,7 @@ class CodeBertJSDataset(Dataset):
         return {
             'input_ids': self.input_ids[index],
             'attention_mask': self.attention_mask[index],
-            'labels': self.labels.input_ids[index],
+            'labels': self.labels[index],
             'class_labels': self.class_labels[index],
         }
     
@@ -162,6 +162,12 @@ class CodeBertJS(LightningModule):
         self.log("classification_loss", classification_loss, prog_bar=True, logger=True)
         self.log("auxilary_loss", auxilary_loss, prog_bar=True, logger=True)
         return {'bert_logits': logits, 'classification_logits': classification_logits, 'classification_loss' : classification_loss, 'loss': loss, "auxilary_loss" : auxilary_loss}
+    
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        probs = torch.argmax(outputs['bert_logits'], dim=-1)
+        codes = self.tokenizer.batch_decode(probs, skip_special_tokens=True)
+        raise ValueError(codes)
+        
         
 
     def validation_step(self, batch, batch_idx):
@@ -275,6 +281,8 @@ def load_ds(tokenizer: RobertaTokenizer, debug = False, classLabels: dict = {
     ds_df = pd.read_sql_query("select * from commitpackft_classified_train",con)
     if not os.path.exists(db_path):
         raise FileNotFoundError('sqlite3 path doesnt exist.')
+    ds_df['old_contents'] = ds_df['old_contents'].apply(lambda code: code.replace('\n', ' '))
+    ds_df['new_contents'] = ds_df['new_contents'].apply(lambda code: code.replace('\n', ' '))
     ds_df['class_labels'] = ds_df['bug_type'].apply(lambda bT: add_labels(bT.split(','), classLabels))
     ds_df = ds_df[ds_df['bug_type'] != 'mobile']
     ds_df = ds_df[ds_df['old_contents'].str.len() > 0]
@@ -327,7 +335,7 @@ def get_dataset(tokenizer, TRAIN_old, VAL_old, TRAIN_new, VAL_new, max_length: i
         return_tensors='pt',
         padding='max_length',
         truncation=True
-    )
+    ).input_ids
 
     VAL_gt = tokenizer(
         VAL_new['output_seq'].tolist(),
@@ -336,7 +344,7 @@ def get_dataset(tokenizer, TRAIN_old, VAL_old, TRAIN_new, VAL_new, max_length: i
         return_tensors='pt',
         padding='max_length',
         truncation=True
-    )
+    ).input_ids
     
     TRAIN_classes = torch.tensor(TRAIN_old['class_labels'].tolist())
     VAL_classes = torch.tensor(VAL_old['class_labels'].tolist())
@@ -435,7 +443,7 @@ def main():
     if debug:
         model.to('cpu')
     
-    BATCH_SIZE = 8 if debug else 64
+    BATCH_SIZE = 4 if debug else 64
     
     dataloader = DataLoader(params['TRAIN_dataset'], batch_size=BATCH_SIZE,num_workers=14, shuffle=True)
     val_dataloader = DataLoader(params['VAL_dataset'], batch_size=BATCH_SIZE, num_workers=14)
