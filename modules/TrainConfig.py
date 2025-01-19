@@ -17,7 +17,7 @@ def init_checkpoint(cpkt_path: str, model_dir: str, version: int, targetMetric: 
     return ModelCheckpoint(
         dirpath=cpkt_path,
         filename=f"{model_dir}_v{version}",
-        save_top_k=1,
+        save_top_k=2,
         verbose=True,
         monitor=targetMetric,
         mode='min'
