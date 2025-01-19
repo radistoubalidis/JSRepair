@@ -204,14 +204,6 @@ class CodeBertJS(LightningModule):
             'logits': outputs,
             'classification_logits': classification_logits
         }
-        
-    def on_test_batch_end(self, outputs: STEP_OUTPUT, batch: Any, batch_idx: int):
-        probs = torch.sigmoid(outputs['classification_logits'])
-        preds = (probs > 0.5).float()
-        generated_code = self.decode_output(outputs['logits'])
-        self.generated_codes.append(generated_code)
-        self.predictions.append(preds)
-        self.labels.append(batch['class_labels'])
     
     def on_test_epoch_end(self):
         all_predictions = torch.cat(self.predictions).cpu().numpy()
