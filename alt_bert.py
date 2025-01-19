@@ -144,12 +144,15 @@ class CodeBertJS(LightningModule):
         self.codebert.gradient_checkpointing_enable()
         loss, logits, classification_logits = self.forward(batch)
         classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
-        bert_grand_norm = self.compute_grad_norm(loss, self.codebert)
-        class_grand_norm = self.compute_grad_norm(classification_loss, self.classifier)
         
         # Dynamic Loss Weights
-        alpha = class_grand_norm / (bert_grand_norm + class_grand_norm + 1e-8)
-        beta = bert_grand_norm / (bert_grand_norm + class_grand_norm + 1e-8)
+        # bert_grand_norm = self.compute_grad_norm(loss, self.codebert)
+        # class_grand_norm = self.compute_grad_norm(classification_loss, self.classifier)
+        # alpha = class_grand_norm / (bert_grand_norm + class_grand_norm + 1e-8)
+        # beta = bert_grand_norm / (bert_grand_norm + class_grand_norm + 1e-8)
+        # static weights
+        alpha = 0.65
+        beta = 0.35
         
         auxilary_loss = alpha * loss + beta * classification_loss
         self.manual_backward(auxilary_loss)
@@ -454,7 +457,7 @@ def main():
         trainer = Trainer(checkpoint=checkpoint,logger=logger,debug=debug, num_epochs=NUM_EPOCHS, precision='32-true')
 
 
-    print('Starting training script..')
+    print('\n\nStarting training script..')
     if len(LOAD_FROM_CPKT) > 0 and os.path.exists(LOAD_FROM_CPKT) and not NEW_CKPT:
         trainer.fit(
             model,
