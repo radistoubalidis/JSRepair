@@ -469,7 +469,7 @@ def main():
             LOAD_FROM_CPKT,
             class_weights=params['class_weights'],
             num_classes=params['num_classes'],
-            dropout_rate=params['DROPOUT_RATE'],
+            dropout_rate=DROPOUT_RATE,
             with_activation=True,
             with_layer_norm=True,
             tokenizer=tokenizer,
