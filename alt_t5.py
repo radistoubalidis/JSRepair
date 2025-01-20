@@ -63,6 +63,7 @@ class CodeT5(LightningModule):
         self.model_dir = model_dir
         self.tokenizer = tokenizer
         self.codet5 = T5ForConditionalGeneration.from_pretrained(self.model_dir)
+        self.codet5.generation_config.use_cache = False # disaple warning
         self.predictions = []
         self.labels = []
         self.classes = ["mobile","functionality","ui-ux","compatibility-performance","network-security","general"] if num_classes == 6  else ["functionality","ui-ux","compatibility-performance","network-security","general"]
@@ -527,6 +528,29 @@ def main():
             val_dataloaders=val_dataloader
         )
         
+    if not debug:
+        import gspread
+        from google.colab import auth
+        from oauth2client.client import GoogleCredentials
+        from google.auth import default
+
+        auth.authenticate_user()
+        creds, _ = default()
+        gc = gspread.authorize(creds)
+
+        spreadsheet = gc.open("model-configs").sheet1
+        modelConfig = {
+                'name': MODEL_DIR,
+                'tokenizer_max_length': TOKENIZER_MAX_LENGTH,
+                'num_classes': params['num_classes'],
+                'dropout_rate': DROPOUT_RATE,
+                'with_activation': True,
+                'with_layer_norm': True,
+                'learning_rate': LEARNING_RATE,
+                'bimodal_train': bimodal_train,
+                'version': VERSION
+        }
+        spreadsheet.append_row(list(modelConfig.values()))
 
 def test_metrics(
     model: CodeT5, 
@@ -627,8 +651,6 @@ def chart(rouge: CodeRouge, comparison_model_path: str, comparison_model_name: s
 
     # Save the entire figure as a single PNG
     plt.savefig(f"{os.environ['METRICS_PATH']}/{os.environ['MODEL_NAME']}_{os.environ['VERSION']}_vs_{comparison_model_name}.png", dpi=300, bbox_inches='tight')
-    
-
 
 def test():
     debug = True if int(input('Debug Run (0,1): ')) == 1 else False
@@ -670,7 +692,14 @@ def test():
     trainer = plTrainer()
     print('Starting testing script..')
     trainer.test(model=model, dataloaders=test_params['loader'])
-    
+    rouge = test_metrics(model, test_df['output_seq'])
+    comparison_model_path = input('paste json path of comparison model: ')
+    if not os.path.exists(comparison_model_path):
+        raise FileNotFoundError(f"{comparison_model_path} not found in host.")
+    comparison_model_name = input('type comparison model\'s name: ')
+    bar_plot(rouge, comparison_model_path, comparison_model_name)
+    chart(rouge, comparison_model_path, comparison_model_name)
+    return 1
 
 
 if __name__ == '__main__':
