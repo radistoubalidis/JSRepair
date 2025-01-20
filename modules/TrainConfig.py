@@ -17,7 +17,7 @@ def init_checkpoint(cpkt_path: str, model_dir: str, version: int, targetMetric: 
     return ModelCheckpoint(
         dirpath=cpkt_path,
         filename=f"{model_dir}_v{version}",
-        save_top_k=2,
+        save_top_k=1,
         verbose=True,
         monitor=targetMetric,
         mode='min'
@@ -45,7 +45,8 @@ def Trainer(
         num_epochs: int, debug=False, precision: str = '16-mixed',
         targetMetric: str = 'val_auxilary_loss'
     ):
-    
+    if num_epochs == 1:
+        num_epochs += 1
     return lTrainer(
         callbacks=[early_stop(targetMetric),checkpoint],
         max_epochs=num_epochs,
