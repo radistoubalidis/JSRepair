@@ -276,10 +276,10 @@ def load_ds(tokenizer: RobertaTokenizer, debug = False, classLabels: dict = {
     if debug:
         ds_df = ds_df.sample(100)
     
-    dmp = diff_match_patch()
-    ds_df['num_changes'] = ds_df.apply(lambda sample: compute_diffs(sample, dmp), axis=1)
-    # Filter out samples with more than 3 changes in the code
-    ds_df = ds_df[ds_df['num_changes'] <= 3]
+    # dmp = diff_match_patch()
+    # ds_df['num_changes'] = ds_df.apply(lambda sample: compute_diffs(sample, dmp), axis=1)
+    # # Filter out samples with more than 3 changes in the code
+    # ds_df = ds_df[ds_df['num_changes'] <= 3]
     
     return ds_df
 
@@ -382,10 +382,10 @@ def load_test_ds(tokenizer: RobertaTokenizer, debug = False, classLabels: dict =
     if debug:
         ds_df = ds_df.sample(100)
     
-    dmp = diff_match_patch()
-    ds_df['num_changes'] = ds_df.apply(lambda sample: compute_diffs(sample, dmp), axis=1)
-    # Filter out samples with more than 3 changes in the code
-    ds_df = ds_df[ds_df['num_changes'] <= 3]
+    # dmp = diff_match_patch()
+    # ds_df['num_changes'] = ds_df.apply(lambda sample: compute_diffs(sample, dmp), axis=1)
+    # # Filter out samples with more than 3 changes in the code
+    # ds_df = ds_df[ds_df['num_changes'] <= 3]
     
     return ds_df
 
@@ -431,7 +431,7 @@ def main():
     old_codes = ds_df[['message', 'old_contents', 'class_labels']]
     new_codes = ds_df[['message', 'new_contents', 'class_labels']]
     
-    bimodal_train = True if input('Combine commit messages with codes (0,1): ') == 1 else False
+    bimodal_train = True
     if bimodal_train:
         old_codes = combine_pl_nl(old_codes, 'input_seq', 'old_contents', tokenizer)
         new_codes = combine_pl_nl(new_codes, 'output_seq', 'new_contents', tokenizer)
@@ -662,7 +662,7 @@ def test():
     dropout_rate = float(input('Type dropout rate used in training: '))
     tokenizer = RobertaTokenizer.from_pretrained(HF_DIR)
     test_df = load_test_ds(tokenizer, debug)
-    bimodal_train = True if int(input('Combine commit messages with codes (1,0): ')) == 1 else False
+    bimodal_train = True
     if bimodal_train:
         test_df = combine_pl_nl(test_df, 'input_seq', 'old_contents', tokenizer)
         test_df = combine_pl_nl(test_df, 'output_seq', 'new_contents', tokenizer)
