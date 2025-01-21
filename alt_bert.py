@@ -1,7 +1,6 @@
 import sqlite3
-from typing import Any
+from typing import Any, List
 from lightning.pytorch.utilities.types import STEP_OUTPUT
-from mdurl import decode
 import pandas as pd
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from transformers import (
@@ -21,6 +20,8 @@ from diff_match_patch import diff_match_patch
 from modules.filters import add_labels, mask, count_comment_lines, compute_diffs
 from sklearn.model_selection import train_test_split
 from modules.TrainConfig import Trainer, init_checkpoint, init_logger
+from modules.metrics import CodeRouge
+import json
 
 HF_DIR = 'microsoft/codebert-base-mlm'
 
@@ -367,6 +368,177 @@ def get_dataset(tokenizer, TRAIN_old, VAL_old, TRAIN_new, VAL_new, max_length: i
         'class_weights': class_weights,
     }
 
+def load_test_ds(tokenizer: RobertaTokenizer, debug = False, classLabels: dict = {
+    "functionality" : 0.,
+    "ui-ux" : 0.,
+    "compatibility-performance" : 0.,
+    "network-security" : 0.,
+    "general": 0.
+}):
+    db_path = 'commitpack-datasets.db' if os.path.exists('commitpack-datasets.db') else '/content/drive/MyDrive/Thesis/commitpack-datasets.db'
+    con = sqlite3.connect(db_path)
+    ds_df = pd.read_sql_query("select * from commitpackft_classified_train",con)
+    if not os.path.exists(db_path):
+        raise FileNotFoundError('sqlite3 path doesnt exist.')
+    
+    ds_df['old_contents'] = ds_df['old_contents'].apply(lambda code: code.replace('\n', ' '))
+    ds_df['new_contents'] = ds_df['new_contents'].apply(lambda code: code.replace('\n', ' '))
+    ds_df['class_labels'] = ds_df['bug_type'].apply(lambda bT: add_labels(bT.split(','), classLabels))
+    ds_df = ds_df[ds_df['bug_type'] != 'mobile']
+    ds_df = ds_df[ds_df['old_contents'].str.len() > 0]
+    ds_df['old_contents_comment_lines_count'] = ds_df['old_contents'].apply(lambda sample: count_comment_lines(sample))
+    ds_df['new_contents_comment_lines_count'] = ds_df['new_contents'].apply(lambda sample: count_comment_lines(sample))
+    # Filter out samples where the sum of comment lines increased more than 3 lines
+    # to prevent excessive masking
+    ds_df = ds_df[abs(ds_df['old_contents_comment_lines_count'] - ds_df['new_contents_comment_lines_count']) <= 3]
+    # Filter out samples with more than 10 comment lines
+    ds_df = ds_df[(ds_df['old_contents_comment_lines_count'] < 10) & (ds_df['new_contents_comment_lines_count'] < 10)]
+    
+    if debug:
+        ds_df = ds_df.sample(100)
+    
+    dmp = diff_match_patch()
+    ds_df['num_changes'] = ds_df.apply(lambda sample: compute_diffs(sample, dmp), axis=1)
+    # Filter out samples with more than 3 changes in the code
+    ds_df = ds_df[ds_df['num_changes'] <= 3]
+    ds_df['masked_old_contents'] = ds_df.apply(lambda row: mask(row['old_contents'], row['new_contents'], tokenizer), axis=1)
+    return ds_df
+
+def get_test_dataset(tokenizer: RobertaTokenizer, test_df: pd.DataFrame, max_length=512):
+    embeds = tokenizer(
+        test_df['input_seq'].tolist(),
+        max_length=max_length,
+        padding='max_length',
+        truncation=True,
+        return_tensors='pt',
+    )
+    truths = tokenizer(
+        test_df['output_seq'].tolist(),
+        max_length=max_length,
+        padding='max_length',
+        truncation=True,
+        return_tensors='pt',
+    ).input_ids
+    test_labels = torch.tensor(test_df['class_labels'].tolist())
+    num_classes = test_labels.size(0)
+    num_samples = test_labels.size(1)
+    test_pos_counts = torch.sum(test_labels, dim=0)
+    test_neg_counts = num_samples - test_pos_counts
+    test_class_weights = test_neg_counts / (test_pos_counts + 1e-6)
+    test_class_weights = test_class_weights.numpy()
+    
+    test_ds = CodeBertJSDataset(encodings=embeds, labels=truths, class_labels=test_labels)
+    loader = DataLoader(test_ds, batch_size=1, num_workers=14)
+    return {
+        'test_embedings': embeds,
+        'test_truths': truths,
+        'class_labels': test_labels,
+        'test_ds': test_ds,
+        'loader': loader,
+        'num_classes': num_classes,
+        'test_class_weights': test_class_weights
+    }
+
+def test_metrics(
+    model: CodeBertJS, 
+    references: List[str],
+    ):
+    rouge = CodeRouge(['rouge7','rouge8','rouge9','rougeL','rougeLsum'])
+    rouge.compute(predictions=model.generated_codes, references=references)
+    rouge.calc_averages()
+    metrics_path = os.environ.get('METRICS_PATH')
+    model_name = os.environ.get('MODEL_NAME')
+    version = os.environ.get('VERSION')
+    avgs_path = f"{metrics_path}/{model_name}/{version}/rouge.json"
+    all_path = f"{metrics_path}/{model_name}/{version}/avg_rouge.json"
+    with open(avgs_path, 'a') as f:
+        json.dump(rouge.avgs, f, indent=4)
+        
+    all_scores = []
+    for r in rouge.rouge_types:
+        all_scores += rouge.rouge_type_to_list(r)
+    
+    metrics_df = pd.DataFrame(all_scores)
+
+    for m in ['precision','recall','fmeasure']:
+        metrics_df[m] = round(metrics_df[m], 3)
+    metrics_df.to_csv(all_path, index=False)
+    return rouge
+    
+def bar_plot(rouge: CodeRouge, comparison_model_path: str, comparison_model_name: str):
+    if not os.path.exists(comparison_model_path):
+        raise FileNotFoundError('Metrics path for comparison model does not exist on host.')
+    with open(comparison_model_path, 'r') as f:
+        comparison_model_rouge_avgs = json.load(f)
+    plot_data = {
+        f"{os.environ['MODEL_NAME']}": (round(rouge.avgs['avg_rouge7'].fmeasure, 5), round(rouge.avgs['avg_rouge8'].fmeasure, 5), round(rouge.avgs['avg_rouge9'].fmeasure, 5), round(rouge.avgs['avg_rougeL'].fmeasure, 5), round(rouge.avgs['avg_rougeLsum'].fmeasure, 5)),
+        comparison_model_name: (round(comparison_model_rouge_avgs['avg_rouge7'][2], 5), round(comparison_model_rouge_avgs['avg_rouge8'][2], 5), round(comparison_model_rouge_avgs['avg_rouge9'][2], 5), round(comparison_model_rouge_avgs['avg_rougeL'][2], 5), round(comparison_model_rouge_avgs['avg_rougeLsum'][2], 5)),
+    }
+    
+    metric_types = ('Rouge-7', 'Rouge-8','Rouge-9', 'Rouge-L', 'Rouge-Lsum')
+    x = np.arange(len(metric_types))
+    width = 0.15
+    multiplier = 0
+    fix, ax = plt.subplots(layout='constrained')
+    for model, values in plot_data.items():
+        offset = width * multiplier
+        rects = ax.bar(x + offset, values, width, label=model)
+        ax.bar_label(rects, padding=3)
+        multiplier += 1
+
+        ax.set_ylabel('Score')
+        ax.set_title('F-Measure Model Comparison')
+        ax.set_xticks(x + width, metric_types)
+        ax.legend(loc='upper left', ncols=4)
+        ax.set_ylim(0, 1.2)
+        plt.savefig(f"{os.environ['METRICS_PATH']}/{os.environ['MODEL_NAME']}_{os.environ['VERSION']}_vs_{comparison_model_name}.png", dpi=300, bbox_inches='tight')
+        plt.show()
+
+def chart(rouge: CodeRouge, comparison_model_path: str, comparison_model_name: str):
+    if not os.path.exists(comparison_model_path):
+        raise FileNotFoundError('Metrics path for comparison model does not exist on host.')
+    with open(comparison_model_path, 'r') as f:
+        comparison_model_rouge_avgs = json.load(f)
+
+    # Define metric types (assuming same metrics for both models)
+    metric_types = ('Rouge-7', 'Rouge-8', 'Rouge-9', 'Rouge-L', 'Rouge-Lsum')
+
+    # Create a figure with 3 rows (subplots) and 1 column
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(20, 16))
+
+    # Data dictionaries for each metric (assuming data structure from rouge)
+    precision_data = {
+        f"{os.environ['MODEL_NAME']}_{os.environ['VERSION']}": (rouge.avgs['avg_rouge7'].precision, rouge.avgs['avg_rouge8'].precision, rouge.avgs['avg_rouge9'].precision, rouge.avgs['avg_rougeL'].precision, rouge.avgs['avg_rougeLsum'].precision),
+        comparison_model_name: (comparison_model_rouge_avgs['avg_rouge7'][0], comparison_model_rouge_avgs['avg_rouge8'][0], comparison_model_rouge_avgs['avg_rouge9'][0], comparison_model_rouge_avgs['avg_rougeL'][0], comparison_model_rouge_avgs['avg_rougeLsum'][0]),
+    }
+    recall_data = {
+        f"{os.environ['MODEL_NAME']}_{os.environ['VERSION']}": (rouge.avgs['avg_rouge7'].recall, rouge.avgs['avg_rouge8'].recall, rouge.avgs['avg_rouge9'].recall, rouge.avgs['avg_rougeL'].recall, rouge.avgs['avg_rougeLsum'].recall),
+        comparison_model_name: (comparison_model_rouge_avgs['avg_rouge7'][1], comparison_model_rouge_avgs['avg_rouge8'][1], comparison_model_rouge_avgs['avg_rouge9'][1], comparison_model_rouge_avgs['avg_rougeL'][1], comparison_model_rouge_avgs['avg_rougeLsum'][1]),
+    }
+    f1_data = {
+        f"{os.environ['MODEL_NAME']}_{os.environ['VERSION']}": (rouge.avgs['avg_rouge7'].fmeasure, rouge.avgs['avg_rouge8'].fmeasure, rouge.avgs['avg_rouge9'].fmeasure, rouge.avgs['avg_rougeL'].fmeasure, rouge.avgs['avg_rougeLsum'].fmeasure),
+        comparison_model_name: (round(comparison_model_rouge_avgs['avg_rouge7'][2], 5), round(comparison_model_rouge_avgs['avg_rouge8'][2], 5), round(comparison_model_rouge_avgs['avg_rouge9'][2], 5), round(comparison_model_rouge_avgs['avg_rougeL'][2], 5), round(comparison_model_rouge_avgs['avg_rougeLsum'][2], 5)),
+    }
+    # Plot Recall (ax2)
+    for model, recall in recall_data.items():
+        ax2.plot(metric_types, recall, label=model, marker='s')  # 'o' for circle marker
+    ax2.set_xlabel('ROUGE-N')
+    ax2.set_ylabel('Recall')
+    ax2.grid(True)
+
+    # Plot F1 Score (ax3)
+    for model, f1 in f1_data.items():
+        ax3.plot(metric_types, f1, label=model, marker='s')
+    ax3.set_xlabel('ROUGE-N')
+    ax3.set_ylabel('F-measure')
+    ax3.grid(True)
+
+    plt.legend(loc='upper left')
+    plt.tight_layout()
+
+    # Save the entire figure as a single PNG
+    plt.savefig(f"{os.environ['METRICS_PATH']}/{os.environ['MODEL_NAME']}_{os.environ['VERSION']}_vs_{comparison_model_name}.png", dpi=300, bbox_inches='tight')
+
 def main():
     debug = True if int(input('Debug Run (0,1): ')) == 1 else False
     tokenizer = RobertaTokenizer.from_pretrained(HF_DIR)
@@ -472,8 +644,6 @@ def main():
             train_dataloaders=dataloader,
             val_dataloaders=val_dataloader
         )
-        
-
 
 if __name__ == '__main__':
     main()

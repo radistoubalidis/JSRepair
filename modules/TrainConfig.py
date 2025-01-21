@@ -35,7 +35,7 @@ def early_stop(targetMetric = 'val_auxilary_loss') -> EarlyStopping:
         mode='min',
         min_delta=3e-2,
         check_finite=True,
-        patience=3,
+        patience=4,
         strict=True,
     )
     

@@ -362,7 +362,7 @@ def load_test_ds(tokenizer: RobertaTokenizer, debug = False, classLabels: dict =
 }):
     db_path = 'commitpack-datasets.db' if os.path.exists('commitpack-datasets.db') else '/content/drive/MyDrive/Thesis/commitpack-datasets.db'
     con = sqlite3.connect(db_path)
-    ds_df = pd.read_sql_query("select * from commitpackft_classified_train",con)
+    ds_df = pd.read_sql_query("select * from commitpackft_classified_test",con)
     if not os.path.exists(db_path):
         raise FileNotFoundError('sqlite3 path doesnt exist.')
     
@@ -562,8 +562,10 @@ def test_metrics(
     metrics_path = os.environ.get('METRICS_PATH')
     model_name = os.environ.get('MODEL_NAME')
     version = os.environ.get('VERSION')
-    avgs_path = f"{metrics_path}/{model_name}/{version}/rouge.json"
-    all_path = f"{metrics_path}/{model_name}/{version}/avg_rouge.json"
+    if not os.path.exists(f"{metrics_path}/{model_name}_{version}"):
+        os.makedirs(f"{metrics_path}/{model_name}_{version}")
+    avgs_path = f"{metrics_path}/{model_name}_{version}/rouge.json"
+    all_path = f"{metrics_path}/{model_name}_{version}/avg_rouge.json"
     with open(avgs_path, 'a') as f:
         json.dump(rouge.avgs, f, indent=4)
         
