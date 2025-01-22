@@ -696,6 +696,30 @@ def main():
             train_dataloaders=dataloader,
             val_dataloaders=val_dataloader
         )
+        
+    if not debug:
+        import gspread
+        from google.colab import auth
+        from oauth2client.client import GoogleCredentials
+        from google.auth import default
+
+        auth.authenticate_user()
+        creds, _ = default()
+        gc = gspread.authorize(creds)
+
+        spreadsheet = gc.open("model-configs").sheet1
+        modelConfig = {
+                'name': MODEL_DIR,
+                'tokenizer_max_length': TOKENIZER_MAX_LENGTH,
+                'num_classes': params['num_classes'],
+                'dropout_rate': DROPOUT_RATE,
+                'with_activation': True,
+                'with_layer_norm': True,
+                'learning_rate': LEARNING_RATE,
+                'bimodal_train': bimodal_train,
+                'version': VERSION
+        }
+        spreadsheet.append_row(list(modelConfig.values()))
 
 if __name__ == '__main__':
     main()
