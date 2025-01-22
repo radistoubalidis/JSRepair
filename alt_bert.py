@@ -371,8 +371,8 @@ def get_dataset(tokenizer, TRAIN_old, VAL_old, TRAIN_new, VAL_new, max_length: i
     TRAIN_classes = torch.tensor(TRAIN_old['class_labels'].tolist())
     VAL_classes = torch.tensor(VAL_old['class_labels'].tolist())
     
-    TRAIN_dataset = CodeBertJSDataset(encodings=TRAIN_encodings, class_labels=TRAIN_classes, labels=TRAIN_labels)
-    VAL_dataset = CodeBertJSDataset(encodings=VAL_encodings, class_labels=VAL_classes, labels=VAL_labels)
+    TRAIN_dataset = CodeBertJSDataset(encodings=TRAIN_encodings, class_labels=TRAIN_classes, labels=TRAIN_labels['input_ids'])
+    VAL_dataset = CodeBertJSDataset(encodings=VAL_encodings, class_labels=VAL_classes, labels=VAL_labels['input_ids'])
     # Class weights
     # pos_weight[i] = (Number of negative samples for class i) / (Number of positive samples for class i)
     num_samples = TRAIN_classes.size(0)
