@@ -364,9 +364,9 @@ def get_dataset(tokenizer, TRAIN_old, VAL_old, TRAIN_new, VAL_new, max_length: i
     )
     
     TRAIN_labels = TRAIN_gt.copy()
-    TRAIN_labels[TRAIN_encodings['input_ids'] != tokenizer.max_token_id] = -100
+    TRAIN_labels[TRAIN_encodings['input_ids'] != tokenizer.mask_token_id] = -100
     VAL_labels = VAL_gt.copy()
-    VAL_labels[VAL_encodings['input_ids'] != tokenizer.max_token_id] = -100
+    VAL_labels[VAL_encodings['input_ids'] != tokenizer.mask_token_id] = -100
     
     TRAIN_classes = torch.tensor(TRAIN_old['class_labels'].tolist())
     VAL_classes = torch.tensor(VAL_old['class_labels'].tolist())
