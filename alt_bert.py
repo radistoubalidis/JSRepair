@@ -180,22 +180,29 @@ class CodeBertJS(LightningModule):
         return {'val_classification_loss' : classification_loss, 'val_loss': loss, "val_auxilary_loss" : val_auxilary_loss}
 
     def test_step(self, batch, batch_idx):
-        loss, outputs, classification_logits = self.forward(batch)
+        codebert_out = self.codebert(
+            input_ids=batch['input_ids'],
+            labels=batch['labels'],
+            attention_mask=batch['attention_mask'],
+            output_hidden_states=True,
+        )
+        hidden_states_output = self.classifier_layers(codebert_out)
+        classification_logits = self.classifier(hidden_states_output)
         classification_loss = self.classification_loss(classification_logits, batch['class_labels'])
         
         # Static weights for validation
         alpha = 0.65
         beta = 0.35
         
-        auxilary_loss = alpha * loss + beta * classification_loss
-        self.log("bert_loss", loss, prog_bar=True, logger=True)
+        auxilary_loss = alpha * codebert_out.loss + beta * classification_loss
+        self.log("bert_loss", codebert_out.loss, prog_bar=True, logger=True)
         self.log("classification_loss", classification_loss, prog_bar=True, logger=True)
         self.log("auxilary_loss", auxilary_loss, prog_bar=True, logger=True)
         return {
             'auxilary_loss': auxilary_loss,
             'classification_loss' : classification_loss, 
-            'loss': loss,
-            'logits': outputs,
+            'loss': codebert_out.loss,
+            'logits': codebert_out.logits,
             'classification_logits': classification_logits
         }
     
@@ -205,17 +212,31 @@ class CodeBertJS(LightningModule):
         self.conf_matrix_plot(all_labels,all_predictions)
         
     def on_test_batch_end(self, outputs: STEP_OUTPUT, batch: Any, batch_idx: int):
+        # calculate classifier preds
         probs = torch.sigmoid(outputs['classification_logits'])
-        preds = (probs > 0.5).float()
-        generated_code = self.decode_output(outputs['logits'])
-        self.generated_codes.append(generated_code)
+        preds = (probs > 0.5).float()[0]
         self.predictions.append(preds)
         self.labels.append(batch['class_labels'])
+
+        # calculate codebert preds
+        mask_i = (batch['input_ids'] == self.tokenizer.mask_token_id)[0].nonzero(as_tuple=True)[0]
+        logits = outputs['logits'].squeeze(0)
+        predicted_token_id = logits[0, mask_i].argmax(axis=-1)
+        predicted_tokens = self.tokenizer.convert_ids_to_tokens(predicted_token_id)
+        predicted_seq = self.tokenizer.convert_tokens_to_string(predicted_tokens)
+        self.generated_codes.append({'batch_id': batch_idx, 'logits': outputs['logits'], 'input_ids': batch['input_ids'], 'labels': batch['labels']})
     
-    def predict_step(self, input_ids, gt_input_ids):
-        return self.model(
-            input_ids=input_ids,
-        )
+    def predict_step(self, batch):
+        with torch.no_grad():
+            codebert_out = self.codebert(**batch)
+        logits = codebert_out.logits
+        mask_token_index = (batch['input_ids'] == self.tokenizer.mask_token_id)[0].nonzero(as_tuple=True)[0]
+        predicted_token_id = logits[0, mask_token_index].argmax(axis=-1)
+        predicted_seq = self.tokenizer.decode(predicted_token_id)
+        truth_token = self.tokenizer.decode(batch['labels'][0][mask_token_index])
+        hidden_states_output = self.classifier_layers(codebert_out)
+        classification_logits = self.classifier(hidden_states_output)
+        
 
     def configure_optimizers(self) -> optim.Adam:
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
@@ -258,10 +279,12 @@ class CodeBertJS(LightningModule):
         plt.savefig(f"{metrics_path}/{model_name}_v{version}/confusion_matrices.png")
         plt.show()
         
-    def decode_output(self, output) -> str:
-        tokens = torch.argmax(output, dim=-1)
-        code = self.tokenizer.batch_decode(tokens, skip_special_tokens=True)[0]
-        return code
+    def decode_output(self, batch, logits) -> str:
+        mask_token_index = (batch['input_ids'] == self.tokenizer.mask_token_id)[0].nonzero(as_tuple=True)[0]
+        predicted_token_id = logits[mask_token_index].squeeze(0)[:1].argmax()
+        real_token = batch['labels'].squeeze(0)[mask_token_index]
+        raise ValueError({'real_token': real_token, 'pred_token': predicted_token_id})
+        return {'real_token': batch['labels'][0][masked_token_index], 'pred_token': predicted_token_id}
 
 def load_ds(tokenizer: RobertaTokenizer, debug = False, classLabels: dict = {
     "functionality" : 0.,
@@ -291,10 +314,10 @@ def load_ds(tokenizer: RobertaTokenizer, debug = False, classLabels: dict = {
     if debug:
         ds_df = ds_df.sample(100)
     
-    dmp = diff_match_patch()
-    ds_df['num_changes'] = ds_df.apply(lambda sample: compute_diffs(sample, dmp), axis=1)
-    # Filter out samples with more than 3 changes in the code
-    ds_df = ds_df[ds_df['num_changes'] <= 3]
+    # dmp = diff_match_patch()
+    # ds_df['num_changes'] = ds_df.apply(lambda sample: compute_diffs(sample, dmp), axis=1)
+    # # Filter out samples with more than 3 changes in the code
+    # ds_df = ds_df[ds_df['num_changes'] <= 3]
     ds_df['masked_old_contents'] = ds_df.apply(lambda row: mask(row['old_contents'], row['new_contents'], tokenizer), axis=1)
     
     return ds_df
@@ -329,7 +352,7 @@ def get_dataset(tokenizer, TRAIN_old, VAL_old, TRAIN_new, VAL_new, max_length: i
         return_tensors='pt',
         padding='max_length',
         truncation=True
-    ).input_ids
+    )
 
     VAL_gt = tokenizer(
         VAL_new['output_seq'].tolist(),
@@ -338,13 +361,18 @@ def get_dataset(tokenizer, TRAIN_old, VAL_old, TRAIN_new, VAL_new, max_length: i
         return_tensors='pt',
         padding='max_length',
         truncation=True
-    ).input_ids
+    )
+    
+    TRAIN_labels = TRAIN_gt.copy()
+    TRAIN_labels[TRAIN_encodings['input_ids'] != tokenizer.max_token_id] = -100
+    VAL_labels = VAL_gt.copy()
+    VAL_labels[VAL_encodings['input_ids'] != tokenizer.max_token_id] = -100
     
     TRAIN_classes = torch.tensor(TRAIN_old['class_labels'].tolist())
     VAL_classes = torch.tensor(VAL_old['class_labels'].tolist())
     
-    TRAIN_dataset = CodeBertJSDataset(encodings=TRAIN_encodings, class_labels=TRAIN_classes, labels=TRAIN_gt)
-    VAL_dataset = CodeBertJSDataset(encodings=VAL_encodings, class_labels=VAL_classes, labels=VAL_gt)
+    TRAIN_dataset = CodeBertJSDataset(encodings=TRAIN_encodings, class_labels=TRAIN_classes, labels=TRAIN_labels)
+    VAL_dataset = CodeBertJSDataset(encodings=VAL_encodings, class_labels=VAL_classes, labels=VAL_labels)
     # Class weights
     # pos_weight[i] = (Number of negative samples for class i) / (Number of positive samples for class i)
     num_samples = TRAIN_classes.size(0)
@@ -395,12 +423,12 @@ def load_test_ds(tokenizer: RobertaTokenizer, debug = False, classLabels: dict =
     ds_df = ds_df[(ds_df['old_contents_comment_lines_count'] < 10) & (ds_df['new_contents_comment_lines_count'] < 10)]
     
     if debug:
-        ds_df = ds_df.sample(100)
+        ds_df = ds_df.sample(10)
     
-    dmp = diff_match_patch()
-    ds_df['num_changes'] = ds_df.apply(lambda sample: compute_diffs(sample, dmp), axis=1)
-    # Filter out samples with more than 3 changes in the code
-    ds_df = ds_df[ds_df['num_changes'] <= 3]
+    # dmp = diff_match_patch()
+    # ds_df['num_changes'] = ds_df.apply(lambda sample: compute_diffs(sample, dmp), axis=1)
+    # # Filter out samples with more than 3 changes in the code
+    # ds_df = ds_df[ds_df['num_changes'] <= 3]
     ds_df['masked_old_contents'] = ds_df.apply(lambda row: mask(row['old_contents'], row['new_contents'], tokenizer), axis=1)
     return ds_df
 
@@ -418,7 +446,9 @@ def get_test_dataset(tokenizer: RobertaTokenizer, test_df: pd.DataFrame, max_len
         padding='max_length',
         truncation=True,
         return_tensors='pt',
-    ).input_ids
+    )
+    labels = truths['input_ids'].clone()
+    labels[embeds['input_ids'] != tokenizer.mask_token_id] = -100
     test_labels = torch.tensor(test_df['class_labels'].tolist())
     num_classes = test_labels.size(0)
     num_samples = test_labels.size(1)
@@ -427,7 +457,7 @@ def get_test_dataset(tokenizer: RobertaTokenizer, test_df: pd.DataFrame, max_len
     test_class_weights = test_neg_counts / (test_pos_counts + 1e-6)
     test_class_weights = test_class_weights.numpy()
     
-    test_ds = CodeBertJSDataset(encodings=embeds, labels=truths, class_labels=test_labels)
+    test_ds = CodeBertJSDataset(encodings=embeds, labels=labels, class_labels=test_labels)
     loader = DataLoader(test_ds, batch_size=1, num_workers=14)
     return {
         'test_embedings': embeds,
@@ -449,8 +479,8 @@ def test_metrics(
     metrics_path = os.environ.get('METRICS_PATH')
     model_name = os.environ.get('MODEL_NAME')
     version = os.environ.get('VERSION')
-    avgs_path = f"{metrics_path}/{model_name}/{version}/rouge.json"
-    all_path = f"{metrics_path}/{model_name}/{version}/avg_rouge.json"
+    avgs_path = f"{metrics_path}/{model_name}_v{version}/rouge.json"
+    all_path = f"{metrics_path}/{model_name}_v{version}/avg_rouge.json"
     with open(avgs_path, 'a') as f:
         json.dump(rouge.avgs, f, indent=4)
         
@@ -475,6 +505,23 @@ def bar_plot(rouge: CodeRouge, comparison_model_path: str, comparison_model_name
         comparison_model_name: (round(comparison_model_rouge_avgs['avg_rouge7'][2], 5), round(comparison_model_rouge_avgs['avg_rouge8'][2], 5), round(comparison_model_rouge_avgs['avg_rouge9'][2], 5), round(comparison_model_rouge_avgs['avg_rougeL'][2], 5), round(comparison_model_rouge_avgs['avg_rougeLsum'][2], 5)),
     }
     
+    plot_data = {
+        f"{os.environ['MODEL_NAME']}_v{os.environ['VERSION']}": (
+            np.float64(rouge.avgs['avg_rouge7'].fmeasure),
+            np.float64(rouge.avgs['avg_rouge8'].fmeasure),
+            np.float64(rouge.avgs['avg_rouge9'].fmeasure),
+            np.float64(rouge.avgs['avg_rougeL'].fmeasure),
+            np.float64(rouge.avgs['avg_rougeLsum'].fmeasure)
+        ),
+        comparison_model_name: (
+            np.float64(comparison_model_rouge_avgs['avg_rouge7'][2]), 
+            np.float64(comparison_model_rouge_avgs['avg_rouge8'][2]), 
+            np.float64(comparison_model_rouge_avgs['avg_rouge9'][2]), 
+            np.float64(comparison_model_rouge_avgs['avg_rougeL'][2]), 
+            np.float64(comparison_model_rouge_avgs['avg_rougeLsum'][2])
+        ),
+    }
+
     metric_types = ('Rouge-7', 'Rouge-8','Rouge-9', 'Rouge-L', 'Rouge-Lsum')
     x = np.arange(len(metric_types))
     width = 0.15
@@ -485,14 +532,13 @@ def bar_plot(rouge: CodeRouge, comparison_model_path: str, comparison_model_name
         rects = ax.bar(x + offset, values, width, label=model)
         ax.bar_label(rects, padding=3)
         multiplier += 1
-
         ax.set_ylabel('Score')
         ax.set_title('F-Measure Model Comparison')
         ax.set_xticks(x + width, metric_types)
         ax.legend(loc='upper left', ncols=4)
         ax.set_ylim(0, 1.2)
-        plt.savefig(f"{os.environ['METRICS_PATH']}/{os.environ['MODEL_NAME']}_{os.environ['VERSION']}_vs_{comparison_model_name}.png", dpi=300, bbox_inches='tight')
-        plt.show()
+    plt.savefig(f"{os.environ['METRICS_PATH']}/{os.environ['MODEL_NAME']}_{os.environ['VERSION']}_vs_{comparison_model_name}.png", dpi=300, bbox_inches='tight')
+    plt.show()
 
 def chart(rouge: CodeRouge, comparison_model_path: str, comparison_model_name: str):
     if not os.path.exists(comparison_model_path):
@@ -519,9 +565,16 @@ def chart(rouge: CodeRouge, comparison_model_path: str, comparison_model_name: s
         f"{os.environ['MODEL_NAME']}_{os.environ['VERSION']}": (rouge.avgs['avg_rouge7'].fmeasure, rouge.avgs['avg_rouge8'].fmeasure, rouge.avgs['avg_rouge9'].fmeasure, rouge.avgs['avg_rougeL'].fmeasure, rouge.avgs['avg_rougeLsum'].fmeasure),
         comparison_model_name: (round(comparison_model_rouge_avgs['avg_rouge7'][2], 5), round(comparison_model_rouge_avgs['avg_rouge8'][2], 5), round(comparison_model_rouge_avgs['avg_rouge9'][2], 5), round(comparison_model_rouge_avgs['avg_rougeL'][2], 5), round(comparison_model_rouge_avgs['avg_rougeLsum'][2], 5)),
     }
+    # Plot precision (ax1)
+    for model, precision in precision_data.items():
+        ax1.plot(metric_types, precision, label=model, marker='s')
+    ax1.set_xlabel('ROUGE-N')
+    ax1.set_ylabel('Precision')
+    ax1.grid(True)
+    
     # Plot Recall (ax2)
     for model, recall in recall_data.items():
-        ax2.plot(metric_types, recall, label=model, marker='s')  # 'o' for circle marker
+        ax2.plot(metric_types, recall, label=model, marker='s')
     ax2.set_xlabel('ROUGE-N')
     ax2.set_ylabel('Recall')
     ax2.grid(True)
@@ -535,7 +588,6 @@ def chart(rouge: CodeRouge, comparison_model_path: str, comparison_model_name: s
 
     plt.legend(loc='upper left')
     plt.tight_layout()
-
     # Save the entire figure as a single PNG
     plt.savefig(f"{os.environ['METRICS_PATH']}/{os.environ['MODEL_NAME']}_{os.environ['VERSION']}_vs_{comparison_model_name}.png", dpi=300, bbox_inches='tight')
 
