@@ -21,6 +21,7 @@
     },
     {
         "buggy_code":"/* Given an array of integers return only the even numbers */\nfunction getEvenNumbers(arr) {\n  return arr.filter(num => num % 2 === 1);\n  }",
-        "correct_code": "/* Given an array of integers return only the even numbers */\nfunction getEvenNumbers(arr) {  return arr.filter(num => num % 2 === 0);\n  }"
+        "correct_code": "/* Given an array of integers return only the even numbers */\nfunction getEvenNumbers(arr) {  return arr.filter(num => num % 2 === 0);\n  }",
+        "bug_type": "functionality"
     }
 ]
