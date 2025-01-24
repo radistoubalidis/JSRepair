@@ -18,5 +18,9 @@
         "buggy_code": "/* Given a list of dom element ids with arbitrary length, write a function that changes their background color to yellow */\nfunction highlightItems(ids) {\n  ids.forEach(id => {\n    const element = document.getElementById(id);\n    if (element) {\n      element.style.backgroundColor = \"yellow\";\n    }\n  });\n}",
         "correct_code": "/* Given a list of dom element ids with arbitrary length, write a function that changes their background color to yellow */\nfunction highlightItems(ids) {\n  const elements = ids.map(id => document.getElementById(id));\n  elements.forEach(element => {\n    if (element) {\n      element.style.backgroundColor = \"yellow\";\n    }\n  });\n}",
         "bug_type": "compatibility-performance"
+    },
+    {
+        "buggy_code":"/* Given an array of integers return only the even numbers */\nfunction getEvenNumbers(arr) {\n  return arr.filter(num => num % 2 === 1);\n  }",
+        "correct_code": "/* Given an array of integers return only the even numbers */\nfunction getEvenNumbers(arr) {  return arr.filter(num => num % 2 === 0);\n  }"
     }
 ]
