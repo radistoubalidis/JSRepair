@@ -54,20 +54,28 @@ def mask(buggy_code: str, correct_code: str, tokenizer: RobertaTokenizer) -> str
     correct_tokens = tokenizer.tokenize(correct_code)
     indices = get_changed_token_indices(buggy_tokens, correct_tokens)
     masked_buggy_tokens = buggy_tokens
-    if len(indices) <= len(buggy_tokens) / 4:
-        for i1, i2 in indices:
-            if abs(i2-i1) == 0:
-                masked_buggy_tokens[i1-1] = tokenizer.mask_token
-            if abs(i2-i1) == 1:
-                masked_buggy_tokens[i1] = tokenizer.mask_token
-            else:
-                for idx in range(i1,i2):
-                    masked_buggy_tokens[idx] = tokenizer.mask_token
+    # if len(indices) <= len(buggy_tokens) / 4:
+    #     for i1, i2 in indices:
+    #         if abs(i2-i1) == 0:
+    #             masked_buggy_tokens[i1-1] = tokenizer.mask_token
+    #         if abs(i2-i1) == 1:
+    #             masked_buggy_tokens[i1] = tokenizer.mask_token
+    #         else:
+    #             for idx in range(i1,i2):
+    #                 masked_buggy_tokens[idx] = tokenizer.mask_token
+    # else:
+    #     num_random_masks = random.randint(1, int(len(buggy_tokens) / 4))
+    #     random_indices = random.sample(range(1,len(buggy_tokens)), num_random_masks)
+    #     for ri in random_indices:
+    #         masked_buggy_tokens[ri] = tokenizer.mask_token
+    if len(indices) <= 1:
+        try:
+            masked_buggy_tokens[indices[0][0]] = tokenizer.mask_token
+        except Exception as e:
+            masked_buggy_tokens[indices[0][0]-1] = tokenizer.mask_token
     else:
-        num_random_masks = random.randint(1, int(len(buggy_tokens) / 4))
-        random_indices = random.sample(range(1,len(buggy_tokens)), num_random_masks)
-        for ri in random_indices:
-            masked_buggy_tokens[ri] = tokenizer.mask_token
+        random_change_index = random.randint(1, len(indices) - 1)
+        masked_buggy_tokens[random_change_index] = tokenizer.mask_token
     return tokenizer.convert_tokens_to_string(masked_buggy_tokens)
 
 
