@@ -5,13 +5,13 @@
         "bug_type": "general,functionality"
     },
     {
-        "buggy_code": "/* Write a function that fetches data via a get request to an API given the url */\nfunction fetchData(url) {\n  let data;\n  fetch(url)\n    .then(response => response.json())\n    .then(json => {\n      data = json;\n    })\n    .catch(error => {\n      console.error(\"Error fetching data:\", error);\n    });\n  return data;\n}",
-        "correct_code": "/* Write a function that fetches data via a get request to an API given the url */\nasync function fetchData(url) {\n  try {\n      const response = await fetch(url); /* Await the fetch response\n      if (!response.ok) {\n        throw new Error(`HTTP error! Status: ${response.status}`);\n      }\n      const data = await response.json();\n      return data;\n  } catch (error) {\n      console.error(\"Error fetching data:\", error);\n      return null;\n  }\n}",
+        "buggy_code": "/* Write a function that displays a user input on an html element */\nfunction displayUserInput(input) {\n  const output = document.getElementById('output');\noutput.innerHTML = `<p>${input}</p>`;\n  }",
+        "correct_code": "/* Write a function that displays a user input on an html element */\nfunction displayUserInput(input) {\n  const output = document.getElementById('output');\noutput.textContent  = input;\n  }",
         "bug_type": "network-security"
     },
     {
-        "buggy_code": "/* Write a function that toggles the visibility of an html element when a user clicks a button */\nfunction toggleContent() {\n  const content = document.getElementById(\"content\");\n  const button = document.getElementById(\"toggle-button\");  \n  \n  if (content.style.display === \"none\") {\n      content.style.display = \"block\";\n      button.innerText = \"Show\";\n  } else {\n      content.style.display = \"none\";\n      button.innerText = \"Hide\";\n  }\n}",
-        "correct_code": "/* Write a function that toggles the visibility of an html element when a user clicks a button */\nfunction toggleContent() {\n  const content = document.getElementById(\"content\");\n  const button = document.getElementById(\"toggle-button\");  \n  \n  if (content.style.display === \"none\") {\n      content.style.display = \"block\";\n      button.innerText = \"Hide\";\n  } else {\n      content.style.display = \"none\";\n      button.innerText = \"Show\";\n  }\n}",
+        "buggy_code": "/* Write a function that logs the string 'Hello' when the user clicks a button */\nfunction buttonAction() {\n  const button = document.getElementById('myButton');\nbutton.addEventListener('clock', () => {\n  console.log('Hello');\n  });\n}",
+        "correct_code": "/* Write a function that logs the string 'Hello' when the user clicks a button */\nfunction buttonAction() {\n  const button = document.getElementById('myButton');\nbutton.addEventListener('click', () => {\n  console.log('Hello');\n  });\n}",
         "bug_type": "ui-ux"
     },
     {
