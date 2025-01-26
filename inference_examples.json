@@ -26,7 +26,7 @@
     },
     {
         "buggy_code": "/* Write a function that returns a boolean value whether a person is an adult */\nfunction isAdult(age) {\n  return age >= 17;\n}",
-        "correct_code": "/* Write a function that returns a boolean value whether a person is an adult */\nfunction isAdult(age) {\n  return age >= 17;\n}",
+        "correct_code": "/* Write a function that returns a boolean value whether a person is an adult */\nfunction isAdult(age) {\n  return age >= 18;\n}",
         "bug_type": "functionality"
     }
 ]
