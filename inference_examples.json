@@ -35,18 +35,13 @@
         "bug_type": "network-security"
     },
     {
-        "buggy_code": "/* Given a string 'text', return its md5 hash equivalent string. If the input is an empty string, return null. */\nfunction toMD5(text){\n  if (text == '') { return null }\n  var md5 = require('js-md5')\n  return md5('text')\n}\n\n",
-        "correct_code": "/* Given a string 'text', return its md5 hash equivalent string. If the input is an empty string, return null. */\nfunction toMD5(text){\n  if (text == '') { return null }\n  var md5 = require('js-md5')\n  return md5(text)\n}\n\n",
-        "bug_type": "functionality"
+        "buggy_code": "/* Write a function that logs a countdown */\nfunction countDown(n) {\n    while (n > 0) {\n        console.log(n);\n        n = n + 1;\n    }\n}",
+        "correct_code": "/* Write a function that logs a countdown */\nfunction countDown(n) {\n    while (n > 0) {\n        console.log(n);\n        n = n - 1;\n    }\n}",
+        "bug_type": "compatibility-performance"
     },
     {
-        "buggy_code": "/* Write a function that returns a user object given their username */\nfunction getUser(username){\n    return db.query(`SELECT * FROM users where username = '${username}'`);\n}",
-        "correct_code": "/* Write a function that returns a user object given their username */\nfunction getUser(username){\n    return db.query(\"SELECT * FROM users where username = ?\", [username]);\n}",
-        "bug_type": "network-security"
-    },
-    {
-        "buggy_code": "/* Write a function that concatenates a list of strings */\nfunction joinStrings(strings) {\n    let result = \"\";\n    for (let str of strings) {\n        result += str;\n    }\n    return result;\n}",
-        "correct_code": "/* Write a function that concatenates a list of strings */\nfunction joinStrings(strings) {\n    let result = \"\";\n    for (let str of strings) {\n        result = result.concat(str);\n    }\n    return result;\n}",
+        "buggy_code": "/* Write a function that checks if a value is contained in an array */\nfunction containsValue(arr, value) {\n    return arr.find((item) => item === value) !== undefined;\n}",
+        "correct_code": "/* Write a function that checks if a value is contained in an array */\nfunction containsValue(arr, value) {\n    return arr.includes(value);\n}",
         "bug_type": "compatibility-performance"
     }
 ]
