@@ -30,8 +30,18 @@
         "bug_type":"compatibility-performance"
     },
     {
-        "buggy_code": "/* You're given a list of deposit and withdrawal operations on a bank account that starts with\nzero balance. Your task is to detect if at any point the balance of account fallls below zero, and\nat that point function should return true. Otherwise it should return false.*/\n function belowZero(operations){\n  var balance = 0;\n  for (const op of operations) {\n    balance += op;\n    if (balance == 0) {\n      return true;\n    }\n  }\n  return false;\n}",
-        "correct_code": "/* You're given a list of deposit and withdrawal operations on a bank account that starts with\nzero balance. Your task is to detect if at any point the balance of account fallls below zero, and\nat that point function should return true. Otherwise it should return false.*/\n function belowZero(operations){\n  var balance = 0;\n for (const op of operations) {\n    balance += op;\n    if (balance < 0) {\n      return true;\n    }\n  }\n  return false;\n}",
+        "buggy_code": "/* Given a positive integer, obtain its roman numeral equivalent as a string,and return it in lowercase. */\n function intToMiniRoman(number){\n let num = [1, 4, 5, 9, 10, 40, 50, 90, 100, 400, 500, 900, 1000]\n  let sym = ['i', 'iv', 'v', 'ix', 'x', 'xl', 'l', 'xc', 'c', 'cd', 'd', 'cm', 'm']\n  let i = 12\n  let res = ''\n  while (number) {\n    let div = (number - number % num[i]) / num[i]\n    number = number % num[i]\n    while (div) {\n      res += sym[i]\n      div -= 1\n    }\n    i -= 1\n  }\n  return res\n}\n\n",
+        "correct_code": "/* Given a positive integer, obtain its roman numeral equivalent as a string,and return it in lowercase. */\n function intToMiniRoman(number){\n   let num = [1, 4, 5, 9, 10, 40, 50, 90, 100, 400, 500, 900, 1000]\n  let sym = ['i', 'iv', 'v', 'ix', 'x', 'xl', 'l', 'xc', 'c', 'cd', 'd', 'cm', 'm']\n  let i = 12\n  let res = ''\n  while (number) {\n    let div = (number - number % num[i]) / num[i]\n    number = number % num[i]\n    while (div) {\n      res += sym[i]\n      div -= 1\n    }\n    i -= 1\n  }\n  return res\n}\n\n",
+        "bug_type": "compatibility-performance"
+    },
+    {
+        "buggy_code": "/* Write a function that checks if a given number is prime */\n function isPrime(n) {\n    if (n == 1) return false;\n    for (let i = 2; i <= Math.sqrt(n); i++) {\n        if (n % i === 0) return false;\n    }\n    return true;\n}",
+        "correct_code": "/* Write a function that checks if a given number is prime */\n function isPrime(n) {\n    if (n <= 1) return false;\n    for (let i = 2; i <= Math.sqrt(n); i++) {\n        if (n % i === 0) return false;\n    }\n    return true;\n}",
         "bug_type": "functionality"
+    },
+    {
+        "buggy_code": "function handleUserInput() {\n    let userInput = document.getElementById('userInput').value;\n    document.getElementById('output').innerHTML = userInput;\n}",
+        "correct_code": "function handleUserInput() {\n    let userInput = document.getElementById('userInput').value;\n    document.getElementById('output').innerText = userInput;\n}",
+        "bug_type": "network-security"
     }
 ]
