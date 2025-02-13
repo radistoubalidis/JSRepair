@@ -56,7 +56,7 @@
     },
     {
         "buggy_code": "/* Write a function that fetches user from an api */\nconst fetchUser = async (userId) => {\n    const response = await fetch(`https://api.example.com/users/${userId}`);\n    const data = await response.json();\n    return data;\n};",
-        "correct_code": "/* Write a function that fetches user from an api */\nconst fetchUser = async (userId) => {\n    const response = await fetch(`https://api.example.com/users/${userId}`);\n    if (!response.ok) throw new Error('User not found');n    const data = await response.json();\n    return data;\n};",
+        "correct_code": "/* Write a function that fetches user from an api */\nconst fetchUser = async (userId) => {\n    const response = await fetch(`https://api.example.com/users/${userId}`);\n    if (!response.ok) throw new Error('User not found');\n    const data = await response.json();\n    return data;\n};",
         "bug_type":"network-security"
 
     }
