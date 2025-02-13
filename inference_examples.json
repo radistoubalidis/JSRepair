@@ -25,11 +25,6 @@
         "bug_type": "ui-ux"
     },
     {
-        "buggy_code": "/* Write a function that concatenates a list of strings in one string */\n function concatenateStrings(strings){\n   let result = \"\";\nfor (let i=0;i<strings.length;i++){\n result += strings[i];\n}\n    return result;\n}",
-        "correct_code": "/* Write a function that concatenates a list of strings in one string */\n function concatenateStrings(strings){\n   let result = [];\nfor (let i=0;i<strings.length;i++){\n result.push(strings[i]);\n}\n    return result.join('');\n}",
-        "bug_type":"compatibility-performance"
-    },
-    {
         "buggy_code": "/* Write a function that checks if a given number is prime */\n function isPrime(n) {\n    if (n <= 1) return false;\n    for (let i = 2; i <= Math.sqrt(n); i++) {\n        if (n / i === 0) return false;\n    }\n    return true;\n}",
         "correct_code": "/* Write a function that checks if a given number is prime */\n function isPrime(n) {\n    if (n <= 1) return false;\n    for (let i = 2; i <= Math.sqrt(n); i++) {\n        if (n % i === 0) return false;\n    }\n    return true;\n}",
         "bug_type": "functionality"
@@ -38,5 +33,20 @@
         "buggy_code": "function handleUserInput() {\n    let userInput = document.getElementById('userInput').value;\n    document.getElementById('output').innerHTML = userInput;\n}",
         "correct_code": "function handleUserInput() {\n    let userInput = document.getElementById('userInput').value;\n    document.getElementById('output').innerText = userInput;\n}",
         "bug_type": "network-security"
+    },
+    {
+        "buggy_code": "/* Given a string 'text', return its md5 hash equivalent string. If the input is an empty string, return null. */\nfunction toMD5(text){\n  if (text == '') { return null }\n  var md5 = require('js-md5')\n  return md5('text')\n}\n\n",
+        "correct_code": "/* Given a string 'text', return its md5 hash equivalent string. If the input is an empty string, return null. */\nfunction toMD5(text){\n  if (text == '') { return null }\n  var md5 = require('js-md5')\n  return md5(text)\n}\n\n",
+        "bug_type": "functionality"
+    },
+    {
+        "buggy_code": "/* Write a function that returns a user object given their username */\nfunction getUser(username){\n    return db.query(`SELECT * FROM users where username = '${username}'`);\n}",
+        "correct_code": "/* Write a function that returns a user object given their username */\nfunction getUser(username){\n    return db.query(\"SELECT * FROM users where username = ?\", [username]);\n}",
+        "bug_type": "network-security"
+    },
+    {
+        "buggy_code": "/* Write a function that concatenates a list of strings */\nfunction joinStrings(strings) {\n    let result = \"\";\n    for (let str of strings) {\n        result += str;\n    }\n    return result;\n}",
+        "correct_code": "/* Write a function that concatenates a list of strings */\nfunction joinStrings(strings) {\n    let result = \"\";\n    for (let str of strings) {\n        result = result.concat(str);\n    }\n    return result;\n}",
+        "bug_type": "compatibility-performance"
     }
 ]
