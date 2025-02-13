@@ -48,5 +48,16 @@
         "buggy_code": "/* Write a function that given a string it replaces all spaces with underscore '_'*/\nfunction replaceAllSpaces(str) {\n    return str.replaceAll(\" \", \"_\");\n}\n",
         "correct_code": "/* Write a function that given a string it replaces all spaces with underscore '_'*/\nfunction replaceAllSpaces(str) {\n    return str.replace(/ /g, \"_\");\n}\n",
         "bug_type": "compatibility-performance"
+    },
+    {
+        "buggy_code": "/* Write a function that creates an progress bar animation with for a given interval */\nfunction animateCounter(element, start, end) {\n    let i = start;\n    let interval = setInterval(() => {\n        element.text = i;\n        if (i++ >= end) clearInterval(interval);\n    }, 50);\n}",
+        "correct_code": "/* Write a function that creates an progress bar animation with for a given interval */\nfunction animateCounter(element, start, end) {\n    let i = start;\n    let interval = setInterval(() => {\n        element.textContent = i;\n        if (i++ >= end) clearInterval(interval);\n    }, 50);\n}",
+        "bug_type":"ui-ux"
+    },
+    {
+        "buggy_code": "/* Write a function that fetches user from an api */\nconst fetchUser = async (userId) => {\n    const response = await fetch(`https://api.example.com/users/${userId}`);\n    const data = await response.json();\n    return data;\n};",
+        "correct_code": "/* Write a function that fetches user from an api */\nconst fetchUser = async (userId) => {\n    const response = await fetch(`https://api.example.com/users/${userId}`);\n    if (!response.ok) throw new Error('User not found');n    const data = await response.json();\n    return data;\n};",
+        "bug_type":"network-security"
+
     }
 ]
