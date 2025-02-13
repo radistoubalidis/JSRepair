@@ -35,8 +35,8 @@
         "bug_type":"compatibility-performance"
     },
     {
-        "buggy_code": "function belowZero(operations){\n       var balance = 0;\n  for (const op of operations) {\n    balance += op;\n    if (balance == 0) {\n      return true;\n    }\n  }\n  return false;\n}",
-        "correct_code": "function belowZero(operations){\n     var balance = 0;\n for (const op of operations) {\n    balance += op;\n    if (balance < 0) {\n      return true;\n    }\n  }\n  return false;\n}",
+        "buggy_code": "/* You're given a list of deposit and withdrawal operations on a bank account that starts with\nzero balance. Your task is to detect if at any point the balance of account fallls below zero, and\nat that point function should return true. Otherwise it should return false.*/\n function belowZero(operations){\n    var balance = 0;\n  for (const op of operations) {\n    balance += op;\n    if (balance == 0) {\n      return true;\n    }\n  }\n  return false;\n}",
+        "correct_code": "/* You're given a list of deposit and withdrawal operations on a bank account that starts with\nzero balance. Your task is to detect if at any point the balance of account fallls below zero, and\nat that point function should return true. Otherwise it should return false.*/\n function belowZero(operations){\n  var balance = 0;\n for (const op of operations) {\n    balance += op;\n    if (balance < 0) {\n      return true;\n    }\n  }\n  return false;\n}",
         "bug_type": "functionality"
     }
 ]
