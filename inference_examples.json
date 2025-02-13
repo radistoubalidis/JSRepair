@@ -37,11 +37,16 @@
     {
         "buggy_code": "/* Write a function that logs a countdown */\nfunction countDown(n) {\n    while (n > 0) {\n        console.log(n);\n        n = n + 1;\n    }\n}",
         "correct_code": "/* Write a function that logs a countdown */\nfunction countDown(n) {\n    while (n > 0) {\n        console.log(n);\n        n = n - 1;\n    }\n}",
-        "bug_type": "compatibility-performance"
+        "bug_type": "compatibility-performance,functionality"
     },
     {
-        "buggy_code": "/* Write a function that checks if a value is contained in an array */\nfunction containsValue(arr, value) {\n    return arr.find((item) => item === value) !== undefined;\n}",
-        "correct_code": "/* Write a function that checks if a value is contained in an array */\nfunction containsValue(arr, value) {\n    return arr.includes(value);\n}",
+        "buggy_code": "/* Write a function that given an array of numbers returns an array of same length with each item doubled*/\nfunction doubleAndFlatten(arr) {\n    return arr.flatMap(num => [num * 2]);\n}",
+        "correct_code": "/* Write a function that given an array of numbers returns an array of same length with each item doubled*/\nfunction doubleAndFlatten(arr) {\n    return arr.map(num => [num * 2]).flat();\n}\n",
+        "bug_type": "compatibility-performance,functionality"
+    },
+    {
+        "buggy_code": "/* Write a function that given a string it replaces all spaces with underscore '_'*/\nfunction replaceAllSpaces(str) {\n    return str.replaceAll(\" \", \"_\");\n}\n",
+        "correct_code": "/* Write a function that given a string it replaces all spaces with underscore '_'*/\nfunction replaceAllSpaces(str) {\n    return str.replace(/ /g, \"_\");\n}\n",
         "bug_type": "compatibility-performance"
     }
 ]
