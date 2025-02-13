@@ -50,7 +50,7 @@
         "bug_type": "compatibility-performance"
     },
     {
-        "buggy_code": "/* Write a function that creates an progress bar animation with for a given interval */\nfunction animateCounter(element, start, end) {\n    let i = start;\n    let interval = setInterval(() => {\n        element.text = i;\n        if (i++ >= end) clearInterval(interval);\n    }, 50);\n}",
+        "buggy_code": "/* Write a function that creates an progress bar animation with for a given interval */\nfunction animateCounter(element, start, end) {\n    let i = start;\n    let interval = setInterval(() => {\n        element.value = i;\n        if (i++ >= end) clearInterval(interval);\n    }, 50);\n}",
         "correct_code": "/* Write a function that creates an progress bar animation with for a given interval */\nfunction animateCounter(element, start, end) {\n    let i = start;\n    let interval = setInterval(() => {\n        element.textContent = i;\n        if (i++ >= end) clearInterval(interval);\n    }, 50);\n}",
         "bug_type":"ui-ux"
     },
