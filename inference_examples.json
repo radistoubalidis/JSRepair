@@ -5,19 +5,9 @@
         "bug_type": "general,functionality"
     },
     {
-        "buggy_code": "/* Write a function that displays a user input on an html element */\nfunction displayUserInput(input) {\n  const output = document.getElementById('output');\noutput.innerHTML = `<p>${input}</p>`;\n  }",
-        "correct_code": "/* Write a function that displays a user input on an html element */\nfunction displayUserInput(input) {\n  const output = document.getElementById('output');\noutput.textContent  = input;\n  }",
-        "bug_type": "network-security"
-    },
-    {
         "buggy_code": "/* Write a function that logs the string 'Hello' when the user clicks a button */\nfunction buttonAction() {\n  const button = document.getElementById('myButton');\nbutton.addEventListener('clock', () => {\n  console.log('Hello');\n  });\n}",
         "correct_code": "/* Write a function that logs the string 'Hello' when the user clicks a button */\nfunction buttonAction() {\n  const button = document.getElementById('myButton');\nbutton.addEventListener('click', () => {\n  console.log('Hello');\n  });\n}",
         "bug_type": "ui-ux"
-    },
-    {
-        "buggy_code": "/* Given a list of dom element ids with arbitrary length, write a function that changes their background color to yellow */\nfunction highlightItems(ids) {\n  ids.forEach(id => {\n    const element = document.getElementById(id);\n    if (element) {\n      element.style.backgroundColor = \"yellow\";\n    }\n  });\n}",
-        "correct_code": "/* Given a list of dom element ids with arbitrary length, write a function that changes their background color to yellow */\nfunction highlightItems(ids) {\n  const elements = ids.map(id => document.getElementById(id));\n  elements.forEach(element => {\n    if (element) {\n      element.style.backgroundColor = \"yellow\";\n    }\n  });\n}",
-        "bug_type": "compatibility-performance"
     },
     {
         "buggy_code":"/* Given an array of integers return only the even numbers */\nfunction getEvenNumbers(arr) {\n  return arr.filter(num => num % 2 === 1);\n  }",
@@ -30,29 +20,14 @@
         "bug_type": "functionality"
     },
     {
-        "buggy_code":"/* Write a function that updates the label of a button element when the user clicks it */\nfunction updateButtonLabel() {\n    let button = document.getElementById(\"myButton\");\n    button.value = \"Processing...\";\n    setTimeout(() => {\n    button.value = \"Done!\";\n    }, 2000);\n}\n\ndocument.getElementById(\"myButton\").addEventListener(\"click\", updateButtonLabel);\n",
-        "correct_code": "/* Write a function that updates the label of a button element when the user clicks it */\nfunction updateButtonLabel() {\n    let button = document.getElementById(\"myButton\");\n    button.innerText = \"Processing...\";\n    setTimeout(() => {\n        button.innerText = \"Done!\";\n    }, 2000);\n}\n",
-        "bug_type":"ui-ux"
-    },
-    {
         "buggy_code": "/* Write a function that takes the role of a user and checks if it is administrator */\nfunction isAdmin(userRole) {\n    return userRole == \"admin\";\n}",
         "correct_code": "/* Write a function that takes the role of a user and checks if it is administrator */\nfunction isAdmin(userRole) {\n    return userRole === \"admin\";\n}",
         "bug_type": "network-security"
     },
     {
-        "buggy_code": "/* Write a function that finds the html element with id 'message' and updates its text based on user input */\n function displayMessage(userInput) {\n   document.getElementById('message').innerHTML = userInput;\n}",
-        "correct_code":  "/* Write a function that finds the html element with id 'message' and updates its text based on user input */\n function displayMessage(userInput) {\n   document.getElementById('message').innerText = userInput;\n}",
-        "bug_type":"network-security"
-    },
-    {
         "buggy_code": "/* Write a function that toggles the visibility of a button when the user clicks it */\n function toggleButton(){\n   let button = document.getElementById('button');\nbutton.disabled = !button.enabled",
         "correct_code": "/* Write a function that toggles the visibility of a button when the user clicks it */\n function toggleButton(){\n   let button = document.getElementById('button');\nbutton.disabled = !button.disabled",
         "bug_type": "ui-ux"
-    },
-    {
-        "buggy_code": "/* Write a function that takes an array of buttons and adds an click event listener for each one */\n function addClickHandlers(buttons){\n  for (let i=0: i<buttons.length; i++){\n buttons[i].addEventListener(\"click\", () => {\n    console.log(\"Button clicked\");\n})\n}\n}",
-        "correct_code": "/* Write a function that takes an array of buttons and adds an click event listener for each one */\n function addClickHandlers(buttons){\n  buttons.forEach(button => {\n button.addEventListener(\"click\", () => {\n    console.log(\"Button clicked\");\n})\n});\n}",
-        "bug_type": "compatibility-performance"
     },
     {
         "buggy_code": "/* Write a function that concatenates a list of strings in one string */\n function concatenateStrings(strings){\n   let result = \"\";\nfor (let i=0;i<strings.length;i++){\n result += strings[i];\n}\n    return result;\n}",
